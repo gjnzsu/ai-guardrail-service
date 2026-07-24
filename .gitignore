@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Model and dataset artifacts
+artifacts/
+models/
+datasets/generated/
+evaluation/reports/
+*.gguf
+*.onnx
+*.safetensors
+*.bin
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
