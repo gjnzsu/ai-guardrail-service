@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-24  
 **Updated:** 2026-07-25
-**Status:** Core design approved; GKE POC extension pending written review
+**Status:** Approved
 
 ## Context
 
