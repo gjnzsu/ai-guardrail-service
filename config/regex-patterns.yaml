@@ -1,0 +1,8 @@
+version: regex-v1
+patterns:
+  EMAIL:
+    - "(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+  API_KEY:
+    - "\\b(?:sk|pk|api)[-_][A-Za-z0-9_-]{16,}\\b"
+  CUSTOMER_ID:
+    - "\\bCUST-[0-9]{5,10}\\b"
