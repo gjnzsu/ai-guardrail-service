@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -62,17 +63,54 @@ class QwenDetector:
         base_url: str,
         model_version: str,
         timeout_seconds: float,
+        schema_path: Path,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model_version = model_version
         self.timeout_seconds = timeout_seconds
         self.transport = transport
-        schema_path = Path("config/qwen-entity-schema.json")
-        self.schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            if not isinstance(schema, dict):
+                raise ValueError
+            jsonschema.Draft202012Validator.check_schema(schema)
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            jsonschema.SchemaError,
+            RecursionError,
+            TypeError,
+            ValueError,
+        ):
+            raise ValueError("invalid Qwen detector schema") from None
+        self.schema: dict[str, Any] = schema
 
     async def detect(self, text: str, message_index: int = 0) -> DetectorOutput:
         started = time.perf_counter()
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                return await self._detect_within_deadline(
+                    text,
+                    message_index,
+                    started,
+                )
+        except (TimeoutError, httpx.TimeoutException):
+            return DetectorOutput(
+                detector=DetectionSource.QWEN,
+                model_version=self.model_version,
+                status="timeout",
+                latency_ms=(time.perf_counter() - started) * 1000,
+                error_code="detector_timeout",
+            )
+
+    async def _detect_within_deadline(
+        self,
+        text: str,
+        message_index: int,
+        started: float,
+    ) -> DetectorOutput:
         try:
             async with httpx.AsyncClient(
                 transport=self.transport,
@@ -137,13 +175,7 @@ class QwenDetector:
                     if "occurrence" in raw and type(raw["occurrence"]) is not int:
                         raise ValueError("invalid completion response")
         except httpx.TimeoutException:
-            return DetectorOutput(
-                detector=DetectionSource.QWEN,
-                model_version=self.model_version,
-                status="timeout",
-                latency_ms=(time.perf_counter() - started) * 1000,
-                error_code="detector_timeout",
-            )
+            raise
         except (
             httpx.HTTPError,
             jsonschema.ValidationError,

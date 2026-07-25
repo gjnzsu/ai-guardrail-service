@@ -1,4 +1,6 @@
+import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -6,13 +8,22 @@ import pytest
 from ai_guardrail.detectors.qwen import QwenDetector, resolve_occurrence
 from ai_guardrail.domain import EntityType
 
+SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "qwen-entity-schema.json"
+)
 
-def make_detector(handler: httpx.MockTransport) -> QwenDetector:
+
+def make_detector(
+    transport: httpx.MockTransport,
+    *,
+    timeout_seconds: float = 2,
+) -> QwenDetector:
     return QwenDetector(
-        base_url="http://qwen.test",
+        base_url="http://qwen.test/",
         model_version="qwen3-0.6b-q4_k_m",
-        timeout_seconds=2,
-        transport=handler,
+        timeout_seconds=timeout_seconds,
+        schema_path=SCHEMA_PATH,
+        transport=transport,
     )
 
 
@@ -30,6 +41,113 @@ def test_occurrence_requires_a_real_integer_and_non_empty_value() -> None:
 
 def test_occurrence_uses_unicode_code_point_offsets() -> None:
     assert resolve_occurrence("😀 Jane Cooper", "Jane Cooper", None) == (2, 13)
+
+
+@pytest.mark.asyncio
+async def test_qwen_uses_explicit_schema_path_outside_repository_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json={"tokens": [1]})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"entities":[]}'}}]},
+        )
+
+    monkeypatch.chdir(tmp_path)
+    detector = make_detector(httpx.MockTransport(handler))
+
+    output = await detector.detect("Jane")
+
+    assert output.status == "success"
+
+
+@pytest.mark.parametrize("schema_contents", ["not-json secret", '{"type": 123}'])
+def test_qwen_rejects_invalid_schema_without_leaking_details(
+    tmp_path: Path,
+    schema_contents: str,
+) -> None:
+    schema_path = tmp_path / "secret-schema.json"
+    schema_path.write_text(schema_contents, encoding="utf-8")
+
+    with pytest.raises(ValueError) as error:
+        QwenDetector(
+            base_url="http://qwen.test/",
+            model_version="qwen3-0.6b-q4_k_m",
+            timeout_seconds=2,
+            schema_path=schema_path,
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
+
+    assert str(error.value) == "invalid Qwen detector schema"
+    assert error.value.__cause__ is None
+
+
+def test_qwen_rejects_missing_schema_without_leaking_path(tmp_path: Path) -> None:
+    schema_path = tmp_path / "secret-missing-schema.json"
+
+    with pytest.raises(ValueError) as error:
+        QwenDetector(
+            base_url="http://qwen.test/",
+            model_version="qwen3-0.6b-q4_k_m",
+            timeout_seconds=2,
+            schema_path=schema_path,
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
+
+    assert str(error.value) == "invalid Qwen detector schema"
+    assert error.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_qwen_calls_exact_llama_cpp_paths_with_trailing_base_slash() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json={"tokens": [1]})
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"entities":[]}'}}]},
+            )
+        return httpx.Response(404)
+
+    output = await make_detector(httpx.MockTransport(handler)).detect("Jane")
+
+    assert output.status == "success"
+    assert requested_paths == ["/tokenize", "/v1/chat/completions"]
+
+
+@pytest.mark.asyncio
+async def test_qwen_enforces_one_deadline_across_both_http_calls() -> None:
+    requested_paths: list[str] = []
+    completion_finished = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal completion_finished
+        requested_paths.append(request.url.path)
+        await asyncio.sleep(0.25)
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json={"tokens": [1]})
+        completion_finished = True
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"entities":[]}'}}]},
+        )
+
+    output = await make_detector(
+        httpx.MockTransport(handler),
+        timeout_seconds=0.4,
+    ).detect("Jane")
+
+    assert output.status == "timeout"
+    assert output.error_code == "detector_timeout"
+    assert requested_paths == ["/tokenize", "/v1/chat/completions"]
+    assert completion_finished is False
 
 
 @pytest.mark.asyncio
