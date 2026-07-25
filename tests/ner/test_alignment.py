@@ -85,6 +85,17 @@ def test_alignment_rejects_token_overlapping_multiple_entities() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "offset",
+    [(-1, 1), (3, 2), (2, 2), ("0", 1)],
+)
+def test_alignment_rejects_invalid_non_special_offset(
+    offset: tuple[int, int],
+) -> None:
+    with pytest.raises(ValueError, match="invalid token offset"):
+        align_spans_to_bio([offset], [])
+
+
 def test_decodes_entity_with_minimum_token_confidence() -> None:
     text = "Jane Cooper"
     offsets = [(0, 4), (5, 11)]
@@ -145,8 +156,8 @@ def test_decode_rejects_mismatched_sequence_lengths() -> None:
         )
 
 
-def test_decode_rejects_empty_non_special_entity_token() -> None:
-    with pytest.raises(ValueError, match="decoded an empty entity span"):
+def test_decode_rejects_zero_width_non_special_entity_token() -> None:
+    with pytest.raises(ValueError, match="invalid token offset"):
         decode_bio_predictions(
             text="Jane",
             offsets=[(3, 3)],
@@ -154,3 +165,36 @@ def test_decode_rejects_empty_non_special_entity_token() -> None:
             probabilities=[0.95],
             message_index=0,
         )
+
+
+@pytest.mark.parametrize(
+    "offset",
+    [(0, 5), (-1, 1), (3, 2), (2, 2), ("0", 1)],
+)
+def test_decode_rejects_invalid_non_special_offset(
+    offset: tuple[int, int],
+) -> None:
+    with pytest.raises(ValueError, match="invalid token offset"):
+        decode_bio_predictions(
+            text="Jane",
+            offsets=[offset],
+            label_ids=[LABEL_TO_ID["O"]],
+            probabilities=[0.95],
+            message_index=0,
+        )
+
+
+def test_decode_ignores_special_tokens() -> None:
+    detections = decode_bio_predictions(
+        text="Jane",
+        offsets=[(0, 0), (0, 4), (0, 0)],
+        label_ids=[
+            LABEL_TO_ID["B-PERSON"],
+            LABEL_TO_ID["B-PERSON"],
+            LABEL_TO_ID["I-PERSON"],
+        ],
+        probabilities=[0.11, 0.95, 0.11],
+        message_index=0,
+    )
+
+    assert [(item.start, item.end, item.confidence) for item in detections] == [(0, 4, 0.95)]

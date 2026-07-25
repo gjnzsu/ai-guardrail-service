@@ -9,10 +9,29 @@ from ai_guardrail.domain import (
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABEL_TO_ID
 
 
+def _validate_token_offset(
+    token_start: object,
+    token_end: object,
+    *,
+    text_length: int | None = None,
+) -> None:
+    if type(token_start) is not int or type(token_end) is not int:
+        raise ValueError("invalid token offset")
+    if token_start == token_end == 0:
+        return
+    if token_start < 0 or token_start >= token_end:
+        raise ValueError("invalid token offset")
+    if text_length is not None and token_end > text_length:
+        raise ValueError("invalid token offset")
+
+
 def align_spans_to_bio(
     offsets: list[tuple[int, int]],
     entities: list[EntitySpan],
 ) -> list[int]:
+    for token_start, token_end in offsets:
+        _validate_token_offset(token_start, token_end)
+
     token_starts = {
         token_start for token_start, token_end in offsets if token_start < token_end
     }
@@ -52,6 +71,9 @@ def decode_bio_predictions(
     probabilities: list[float],
     message_index: int,
 ) -> list[CandidateDetection]:
+    for token_start, token_end in offsets:
+        _validate_token_offset(token_start, token_end, text_length=len(text))
+
     detections: list[CandidateDetection] = []
     current_type: EntityType | None = None
     current_start = 0
