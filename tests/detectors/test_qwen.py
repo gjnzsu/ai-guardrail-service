@@ -1,5 +1,6 @@
 import asyncio
 import json
+import tomllib
 from pathlib import Path
 
 import httpx
@@ -8,9 +9,8 @@ import pytest
 from ai_guardrail.detectors.qwen import QwenDetector, resolve_occurrence
 from ai_guardrail.domain import EntityType
 
-SCHEMA_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "qwen-entity-schema.json"
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCHEMA_PATH = PROJECT_ROOT / "config" / "qwen-entity-schema.json"
 
 
 def make_detector(
@@ -22,7 +22,6 @@ def make_detector(
         base_url="http://qwen.test/",
         model_version="qwen3-0.6b-q4_k_m",
         timeout_seconds=timeout_seconds,
-        schema_path=SCHEMA_PATH,
         transport=transport,
     )
 
@@ -43,8 +42,29 @@ def test_occurrence_uses_unicode_code_point_offsets() -> None:
     assert resolve_occurrence("😀 Jane Cooper", "Jane Cooper", None) == (2, 13)
 
 
+def test_qwen_accepts_approved_three_argument_constructor() -> None:
+    detector = QwenDetector(
+        base_url="http://qwen.test/",
+        model_version="qwen3-0.6b-q4_k_m",
+        timeout_seconds=2,
+    )
+
+    assert detector.schema["type"] == "object"
+
+
+def test_authoritative_schema_is_included_in_installed_data_files() -> None:
+    pyproject = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert pyproject["tool"]["setuptools"]["data-files"][
+        "share/ai-guardrail-service"
+    ] == ["config/qwen-entity-schema.json"]
+    assert SCHEMA_PATH.is_file()
+
+
 @pytest.mark.asyncio
-async def test_qwen_uses_explicit_schema_path_outside_repository_cwd(
+async def test_qwen_uses_default_schema_outside_repository_cwd(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:

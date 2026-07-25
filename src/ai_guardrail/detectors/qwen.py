@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,29 @@ If the same substring occurs more than once, include its 1-based occurrence.
 Do not rewrite, explain, or infer text that is absent from the input."""
 
 MAX_MODEL_CONTENT_BYTES = 16_384
+SCHEMA_FILENAME = "qwen-entity-schema.json"
+INSTALLED_SCHEMA_SUFFIX = f"share/ai-guardrail-service/{SCHEMA_FILENAME}"
+
+
+def _default_schema_path() -> Path:
+    source_path = (
+        Path(__file__).resolve().parents[3] / "config" / SCHEMA_FILENAME
+    )
+    if source_path.is_file():
+        return source_path
+
+    try:
+        distribution = metadata.distribution("ai-guardrail-service")
+    except metadata.PackageNotFoundError:
+        raise ValueError from None
+
+    for package_path in distribution.files or ():
+        normalized = str(package_path).replace("\\", "/")
+        if normalized.endswith(INSTALLED_SCHEMA_SUFFIX):
+            installed_path = Path(distribution.locate_file(package_path))
+            if installed_path.is_file():
+                return installed_path
+    raise ValueError
 
 
 def resolve_occurrence(
@@ -63,7 +87,7 @@ class QwenDetector:
         base_url: str,
         model_version: str,
         timeout_seconds: float,
-        schema_path: Path,
+        schema_path: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -71,7 +95,12 @@ class QwenDetector:
         self.timeout_seconds = timeout_seconds
         self.transport = transport
         try:
-            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            selected_schema_path = (
+                schema_path if schema_path is not None else _default_schema_path()
+            )
+            schema = json.loads(
+                selected_schema_path.read_text(encoding="utf-8")
+            )
             if not isinstance(schema, dict):
                 raise ValueError
             jsonschema.Draft202012Validator.check_schema(schema)
