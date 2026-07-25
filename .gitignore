@@ -26,3 +26,6 @@ evaluation/reports/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Isolated implementation worktrees
+.worktrees/
