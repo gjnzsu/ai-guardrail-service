@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from ai_guardrail.ner import manifest as manifest_module
+from ai_guardrail.ner.labels import LABEL_TO_ID
 from ai_guardrail.ner.manifest import build_manifest, sha256_file, write_manifest
 
 
@@ -32,6 +33,8 @@ def test_build_manifest_records_reproducibility_metadata(
         base_checkpoint="distilbert/distilbert-base-cased",
         base_revision="abc123",
         dataset_version="v1",
+        generator_version="v1",
+        label_mapping=LABEL_TO_ID,
         seed=7,
         threshold=None,
         metrics={"eval_loss": 0.25},
@@ -43,6 +46,8 @@ def test_build_manifest_records_reproducibility_metadata(
         "base_checkpoint": "distilbert/distilbert-base-cased",
         "base_revision": "abc123",
         "dataset_version": "v1",
+        "generator_version": "v1",
+        "label_mapping": LABEL_TO_ID,
         "seed": 7,
         "threshold": None,
         "metrics": {"eval_loss": 0.25},
@@ -63,8 +68,68 @@ def test_build_manifest_rejects_out_of_range_threshold(threshold: float) -> None
             base_checkpoint="checkpoint",
             base_revision="revision",
             dataset_version="v1",
+            generator_version="v1",
+            label_mapping=LABEL_TO_ID,
             seed=7,
             threshold=threshold,
+            metrics={},
+            hyperparameters={},
+        )
+
+
+def test_build_manifest_rejects_changed_label_mapping() -> None:
+    changed_mapping = dict(LABEL_TO_ID)
+    changed_mapping["O"] = 99
+
+    with pytest.raises(ValueError, match="label mapping does not match"):
+        build_manifest(
+            base_checkpoint="distilbert/distilbert-base-cased",
+            base_revision="revision",
+            dataset_version="v1",
+            generator_version="v1",
+            label_mapping=changed_mapping,
+            seed=7,
+            threshold=None,
+            metrics={},
+            hyperparameters={},
+        )
+
+
+def test_build_manifest_rejects_boolean_label_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    changed_mapping = dict(LABEL_TO_ID)
+    changed_mapping["B-PERSON"] = True
+    monkeypatch.setattr(
+        manifest_module.importlib.metadata,
+        "version",
+        lambda name: "test-version",
+    )
+
+    with pytest.raises(ValueError, match="label mapping does not match"):
+        build_manifest(
+            base_checkpoint="distilbert/distilbert-base-cased",
+            base_revision="revision",
+            dataset_version="v1",
+            generator_version="v1",
+            label_mapping=changed_mapping,
+            seed=7,
+            threshold=None,
+            metrics={},
+            hyperparameters={},
+        )
+
+
+def test_build_manifest_rejects_unexpected_generator_version() -> None:
+    with pytest.raises(ValueError, match="generator version does not match"):
+        build_manifest(
+            base_checkpoint="distilbert/distilbert-base-cased",
+            base_revision="revision",
+            dataset_version="v1",
+            generator_version="private-generator-v2",
+            label_mapping=LABEL_TO_ID,
+            seed=7,
+            threshold=None,
             metrics={},
             hyperparameters={},
         )

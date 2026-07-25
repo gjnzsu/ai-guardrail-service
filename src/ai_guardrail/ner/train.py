@@ -7,7 +7,14 @@ from typing import Any
 from ai_guardrail.io import read_jsonl
 from ai_guardrail.ner.alignment import align_spans_to_bio
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABEL_TO_ID
-from ai_guardrail.ner.manifest import build_manifest, sha256_file, write_manifest
+from ai_guardrail.ner.manifest import (
+    ARTIFACT_NAME,
+    BASE_CHECKPOINT,
+    GENERATOR_VERSION,
+    build_manifest,
+    sha256_file,
+    write_manifest,
+)
 
 _MANIFEST_NAME = "training-manifest.json"
 
@@ -51,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260725)
     parser.add_argument(
         "--base-checkpoint",
-        default="distilbert/distilbert-base-cased",
+        default=BASE_CHECKPOINT,
     )
     return parser.parse_args()
 
@@ -76,16 +83,34 @@ def _load_ml_dependencies() -> tuple[Any, ...]:
     )
 
 
+def _validate_generator_version(train_path: Path, validation_path: Path) -> str:
+    try:
+        datasets = (read_jsonl(train_path), read_jsonl(validation_path))
+    except ValueError:
+        raise ValueError("invalid training dataset provenance") from None
+    if any(
+        {example.generator_version for example in examples} != {GENERATOR_VERSION}
+        for examples in datasets
+    ):
+        raise ValueError("invalid training dataset provenance")
+    return GENERATOR_VERSION
+
+
 def main() -> None:
     args = parse_args()
+    if args.base_checkpoint != BASE_CHECKPOINT or args.output.name != ARTIFACT_NAME:
+        raise ValueError("invalid training configuration")
     if args.output.is_symlink() or (args.output.exists() and not args.output.is_dir()):
         raise ValueError("output must be a local directory")
+    if args.output.exists() and next(args.output.iterdir(), None) is not None:
+        raise ValueError("output directory must be empty")
     resolved_output = args.output.resolve()
     if any(
         dataset_path.resolve().is_relative_to(resolved_output)
         for dataset_path in (args.train, args.validation)
     ):
         raise ValueError("output directory must not contain an input dataset")
+    generator_version = _validate_generator_version(args.train, args.validation)
     args.output.mkdir(parents=True, exist_ok=True)
 
     (
@@ -149,6 +174,8 @@ def main() -> None:
         base_checkpoint=args.base_checkpoint,
         base_revision=resolved_revision,
         dataset_version="v1",
+        generator_version=generator_version,
+        label_mapping=LABEL_TO_ID,
         seed=args.seed,
         threshold=None,
         metrics=evaluation,

@@ -13,6 +13,7 @@ from ai_guardrail.io import write_jsonl
 from ai_guardrail.ner import manifest as manifest_module
 from ai_guardrail.ner import train as train_module
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABEL_TO_ID
+from ai_guardrail.ner.manifest import ARTIFACT_NAME, BASE_CHECKPOINT
 from ai_guardrail.ner.train import NerDataset, _artifact_checksums
 
 
@@ -28,6 +29,35 @@ def test_training_cli_help_requires_dataset_and_output_paths() -> None:
     assert "--train" in result.stdout
     assert "--validation" in result.stdout
     assert "--output" in result.stdout
+
+
+def test_training_cli_help_does_not_import_optional_ml_modules() -> None:
+    script = """
+import builtins
+import runpy
+import sys
+
+real_import = builtins.__import__
+blocked = {"accelerate", "huggingface_hub", "torch", "transformers"}
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name.split(".", 1)[0] in blocked:
+        raise AssertionError(f"optional ML import attempted: {name}")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+sys.argv = ["ai_guardrail.ner.train", "--help"]
+runpy.run_module("ai_guardrail.ner.train", run_name="__main__")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--train" in result.stdout
 
 
 class FakeTrainingTokenizer:
@@ -97,11 +127,9 @@ def test_training_rejects_output_tree_containing_input_dataset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output = tmp_path / "artifact"
-    output.mkdir()
+    output = tmp_path / ARTIFACT_NAME
     train_path = output / "train.jsonl"
     validation_path = tmp_path / "validation.jsonl"
-    train_path.write_text("{}\n", encoding="utf-8")
     validation_path.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(
         train_module,
@@ -111,7 +139,7 @@ def test_training_rejects_output_tree_containing_input_dataset(
             validation=validation_path,
             output=output,
             seed=7,
-            base_checkpoint="checkpoint",
+            base_checkpoint=BASE_CHECKPOINT,
         ),
     )
     monkeypatch.setattr(
@@ -125,6 +153,150 @@ def test_training_rejects_output_tree_containing_input_dataset(
         match="output directory must not contain an input dataset",
     ):
         train_module.main()
+
+
+def test_training_rejects_wrong_base_checkpoint_before_ml_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        train_module,
+        "parse_args",
+        lambda: Namespace(
+            train=tmp_path / "train.jsonl",
+            validation=tmp_path / "validation.jsonl",
+            output=tmp_path / ARTIFACT_NAME,
+            seed=7,
+            base_checkpoint="private/unapproved-checkpoint",
+        ),
+    )
+    monkeypatch.setattr(
+        train_module,
+        "_load_ml_dependencies",
+        lambda: pytest.fail("ML dependencies must not load for a wrong checkpoint"),
+    )
+
+    with pytest.raises(ValueError, match="invalid training configuration") as exc_info:
+        train_module.main()
+
+    assert "private/unapproved-checkpoint" not in str(exc_info.value)
+
+
+def test_training_rejects_wrong_artifact_name_before_ml_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        train_module,
+        "parse_args",
+        lambda: Namespace(
+            train=tmp_path / "train.jsonl",
+            validation=tmp_path / "validation.jsonl",
+            output=tmp_path / "private-renamed-artifact",
+            seed=7,
+            base_checkpoint=BASE_CHECKPOINT,
+        ),
+    )
+    monkeypatch.setattr(
+        train_module,
+        "_load_ml_dependencies",
+        lambda: pytest.fail("ML dependencies must not load for a wrong artifact name"),
+    )
+
+    with pytest.raises(ValueError, match="invalid training configuration") as exc_info:
+        train_module.main()
+
+    assert "private-renamed-artifact" not in str(exc_info.value)
+
+
+def test_training_rejects_prepopulated_output_before_ml_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / ARTIFACT_NAME
+    output.mkdir()
+    (output / "unrelated-private-file.txt").write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(
+        train_module,
+        "parse_args",
+        lambda: Namespace(
+            train=tmp_path / "train.jsonl",
+            validation=tmp_path / "validation.jsonl",
+            output=output,
+            seed=7,
+            base_checkpoint=BASE_CHECKPOINT,
+        ),
+    )
+    monkeypatch.setattr(
+        train_module,
+        "_load_ml_dependencies",
+        lambda: pytest.fail("ML dependencies must not load for stale output"),
+    )
+
+    with pytest.raises(ValueError, match="output directory must be empty") as exc_info:
+        train_module.main()
+
+    assert "unrelated-private-file.txt" not in str(exc_info.value)
+
+
+def test_training_rejects_unexpected_generator_version_before_ml_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "validation.jsonl"
+    write_jsonl(
+        train_path,
+        [
+            LabeledExample(
+                id="train-1",
+                language="en",
+                text="Jane Cooper",
+                entities=[EntitySpan(type=EntityType.PERSON, start=0, end=11)],
+                template_family="person",
+                generator_version="v1",
+                split="train",
+            )
+        ],
+    )
+    validation_record = {
+        "id": "validation-private",
+        "language": "en",
+        "text": "private validation text",
+        "entities": [],
+        "template_family": "private-family",
+        "generator_version": "private-generator-v2",
+        "split": "validation",
+    }
+    validation_path.write_text(
+        json.dumps(validation_record) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        train_module,
+        "parse_args",
+        lambda: Namespace(
+            train=train_path,
+            validation=validation_path,
+            output=tmp_path / ARTIFACT_NAME,
+            seed=7,
+            base_checkpoint=BASE_CHECKPOINT,
+        ),
+    )
+    monkeypatch.setattr(
+        train_module,
+        "_load_ml_dependencies",
+        lambda: pytest.fail("ML dependencies must not load for invalid provenance"),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        train_module.main()
+
+    error = str(exc_info.value)
+    assert "private-generator-v2" not in error
+    assert "private validation text" not in error
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__
 
 
 class FakeSavedTokenizer(FakeTrainingTokenizer):
@@ -184,13 +356,17 @@ class FakeTrainer:
         return {"eval_loss": 0.25, "eval_runtime": 1, "ignored": "not numeric"}
 
 
+@pytest.mark.parametrize("precreate_output", [False, True])
 def test_training_main_pins_revision_and_writes_artifact_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    precreate_output: bool,
 ) -> None:
     train_path = tmp_path / "train.jsonl"
     validation_path = tmp_path / "validation.jsonl"
-    output = tmp_path / "artifact"
+    output = tmp_path / ARTIFACT_NAME
+    if precreate_output:
+        output.mkdir()
     for path, split in ((train_path, "train"), (validation_path, "validation")):
         write_jsonl(
             path,
@@ -270,6 +446,8 @@ def test_training_main_pins_revision_and_writes_artifact_manifest(
     assert len(FakeTrainer.latest.kwargs["eval_dataset"]) == 1
     manifest = json.loads((output / "training-manifest.json").read_text(encoding="utf-8"))
     assert manifest["base_revision"] == "immutable-revision"
+    assert manifest["generator_version"] == "v1"
+    assert manifest["label_mapping"] == LABEL_TO_ID
     assert manifest["seed"] == 7
     assert manifest["threshold"] is None
     assert manifest["metrics"] == {"eval_loss": 0.25, "eval_runtime": 1.0}
