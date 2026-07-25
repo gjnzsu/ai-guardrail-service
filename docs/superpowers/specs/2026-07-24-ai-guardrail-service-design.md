@@ -1,7 +1,8 @@
 # AI Guardrail Service Design
 
 **Date:** 2026-07-24  
-**Status:** Approved for implementation planning
+**Updated:** 2026-07-25
+**Status:** Core design approved; GKE POC extension pending written review
 
 ## Context
 
@@ -49,6 +50,8 @@ The initial assumptions are:
   masking or enforcement rollout.
 - Make partial detector failure observable without failing the entire analysis
   when another detector remains available.
+- Prove the complete shadow path on the existing GKE cluster without creating
+  public endpoints or new cluster capacity.
 
 ## Non-goals
 
@@ -61,6 +64,9 @@ The initial assumptions are:
 - Fine-tuning Qwen in the first proof of concept.
 - GPU serving infrastructure.
 - Committing model weights or generated datasets to Git.
+- Creating, resizing, upgrading, or deleting a GKE cluster or node pool.
+- Production-grade autoscaling, high availability, ingress, TLS, persistent
+  model volumes, or infrastructure-as-code for the GKE proof of concept.
 
 ## Repository and Service Boundaries
 
@@ -98,6 +104,10 @@ fixtures, and documentation. A separate artifact store or mounted volume stores:
 - Qwen GGUF weights;
 - generated training and evaluation data;
 - full benchmark reports.
+
+Local Docker Compose mounts model artifacts from a Git-ignored `models/`
+directory. The GKE proof of concept stores model artifacts in a private Cloud
+Storage bucket.
 
 ## Architecture
 
@@ -281,6 +291,7 @@ Example response:
 {
   "request_id": "req-123",
   "api_version": "v1",
+  "offset_unit": "unicode_codepoint",
   "mode": "shadow",
   "decision": "observe",
   "result_status": "success",
@@ -319,6 +330,10 @@ Example response:
 
 The public response omits entity text. It returns only message identity, entity
 type, validated offsets, sources, and meaningful confidence.
+
+`start` is inclusive and `end` is exclusive. Both are Unicode code-point
+offsets into the original message content. The explicit `offset_unit` prevents
+clients that use UTF-16 indexing from interpreting the span incorrectly.
 
 ### HTTP behavior
 
@@ -394,6 +409,7 @@ All candidates must satisfy:
 
 - the message index exists;
 - `0 <= start < end <= len(content)`;
+- offsets use Unicode code points and `end` is exclusive;
 - the type is in the allowlist;
 - the span is within configured length limits;
 - Qwen substring and occurrence validation succeeded.
@@ -471,7 +487,8 @@ consumer. They cannot silently inherit shadow behavior.
 - Qwen raw output is not logged.
 - `llama.cpp` prompt logging is disabled.
 - Stack traces exposed to clients contain no input.
-- The API is cluster-internal and protected by Kubernetes network policy.
+- The GKE POC API is cluster-internal behind a `ClusterIP` Service. Network
+  policy is future hardening rather than a POC dependency.
 - Evaluation uses only synthetic values.
 - Model and dataset artifacts have version manifests and checksums.
 - Service metrics contain only types, counts, statuses, latencies, and versions.
@@ -623,6 +640,8 @@ standard unit-test dependencies.
 
 ## Deployment
 
+### Runtime topology
+
 The proof of concept uses separate processes or containers:
 
 ```text
@@ -651,6 +670,134 @@ limits, model checksum, context limit, and runtime version.
 
 The existing gateway pod does not load either model.
 
+### Local Docker Compose
+
+Docker Desktop provides the cloud-independent vertical slice:
+
+```text
+docker compose up --build
+  |-- ai-guardrail
+  |     `-- bind-mounted DistilBERT artifact
+  `-- qwen-runtime
+        `-- bind-mounted Qwen GGUF
+```
+
+The local `models/` directory is ignored by Git. The Qwen container uses an
+upstream `llama.cpp` server image pinned by digest. No custom Qwen image is
+required.
+
+### GKE proof-of-concept boundary
+
+The cloud proof of concept:
+
+- reuses the explicitly selected existing GKE cluster;
+- reuses the existing `ai-gateway` namespace;
+- deploys `ai-guardrail` and `qwen-runtime` as separate one-replica
+  Deployments;
+- exposes both workloads through internal `ClusterIP` Services;
+- uses `Recreate` strategy so an update does not temporarily require two copies
+  of a model;
+- creates no Namespace, LoadBalancer, Ingress, DNS, TLS, PVC, database, cluster,
+  or node pool;
+- does not automatically resize or otherwise mutate the existing cluster.
+
+Before deployment, the operator confirms the project, cluster, location, node
+architecture, and available CPU and memory. Insufficient capacity leaves the
+workload unscheduled and is an experiment result, not permission to resize the
+cluster.
+
+Guardrail readiness requires a usable API, regex configuration, and NER model.
+Qwen unavailability is reported as degraded and does not make the authoritative
+detectors unavailable. Gateway shadow calls remain fail-open.
+
+### Model delivery on GKE
+
+One private Cloud Storage bucket stores versioned NER and Qwen artifacts:
+
+```text
+gs://<project>-ai-guardrail-poc-models/
+|-- ner/ai-guardrail-ner-en-v1/<sha256>/...
+`-- qwen/qwen3-0.6b-q4-k-m/<sha256>/model.gguf
+```
+
+Each model Pod uses an init container to:
+
+1. download the configured object to an `emptyDir`;
+2. require the configured object generation;
+3. verify the configured SHA-256;
+4. expose the verified files read-only to the runtime container.
+
+A dedicated Kubernetes ServiceAccount receives only
+`roles/storage.objectViewer` on the model bucket through Workload Identity
+Federation for GKE. No service-account key is created or mounted.
+
+The POC intentionally uses `emptyDir` instead of a PVC. Model download time and
+Pod-ready time are measured as learning results.
+
+### Build and deploy
+
+The repository contains:
+
+```text
+Dockerfile
+compose.yaml
+cloudbuild.yaml
+deploy/gke-poc/
+|-- kustomization.yaml
+|-- service-account.yaml
+|-- configmap.yaml
+|-- guardrail.yaml
+`-- qwen.yaml
+```
+
+There is no Terraform module and no setup, deploy, verify, or destroy script
+suite. A short runbook contains the one-time `gcloud` commands to create the
+bucket, upload models, grant bucket read access, and grant the Cloud Build
+service account the minimum image-push and GKE-deploy permissions.
+
+One manually invoked Cloud Build:
+
+1. builds the Guardrail image;
+2. tags it with the Git commit SHA and pushes it to the existing Artifact
+   Registry repository;
+3. renders the pinned Guardrail image and pinned upstream `llama.cpp` image;
+4. applies the flat Kustomize directory to the selected cluster and namespace;
+5. waits for both rollouts;
+6. checks both Service endpoints and runs one synthetic smoke request from a
+   short-lived in-cluster Pod, because `ClusterIP` is not reachable directly
+   from the Cloud Build worker.
+
+Cloud Build is manually invoked for the POC rather than triggered on every
+commit. The deployment never uses `latest`.
+
+### GKE POC acceptance and cleanup
+
+The cloud proof of concept is accepted when:
+
+- both Deployments are ready and both Services are `ClusterIP`;
+- both model artifacts pass generation and SHA-256 checks;
+- one synthetic request produces validated regex and NER spans;
+- Qwen runs and remains explicitly observational;
+- the Gateway shadow call does not mutate the provider prompt;
+- Guardrail timeout or unavailability does not block the provider call;
+- logs contain no raw prompt, entity text, or Qwen raw output;
+- CPU, memory, detector latency, model download time, and Pod-ready time are
+  recorded.
+
+Latency targets remain learning criteria. Missing a target is recorded without
+automatically expanding the cluster or POC scope.
+
+Cleanup is one explicit command:
+
+```powershell
+kubectl delete -k deploy/gke-poc
+```
+
+The kustomization does not contain a Namespace resource, so this removes only
+the declared Guardrail POC workloads and leaves the existing Gateway and
+`ai-gateway` namespace intact. The model bucket remains until the operator
+separately decides to delete it.
+
 ## Delivery Phases
 
 ### Phase 1: offline experiment
@@ -676,6 +823,15 @@ The existing gateway pod does not load either model.
 - safe correlation and detector metadata;
 - no prompt mutation or blocking.
 
+### Phase 4: GKE proof of concept
+
+- local Docker Compose vertical slice;
+- private GCS model delivery through Workload Identity;
+- one-command Cloud Build deployment to the existing cluster and namespace;
+- internal Guardrail and Qwen Services;
+- synthetic end-to-end shadow verification;
+- resource, latency, startup, and privacy evidence.
+
 ### Future phases
 
 - conditional Qwen gray-zone routing;
@@ -696,3 +852,11 @@ The existing gateway pod does not load either model.
 - Run all detectors concurrently.
 - Use synthetic data with split isolation and a hand-reviewed challenge set.
 - Integrate with the gateway in shadow mode before masking or enforcement.
+- Use Unicode code-point `[start, end)` offsets in the API contract.
+- Reuse the existing GKE cluster and `ai-gateway` namespace for the POC.
+- Use Docker Compose locally and one Cloud Build configuration for GKE.
+- Keep model weights in private GCS and verify object generation and SHA-256.
+- Use a pinned upstream `llama.cpp` server image instead of building a custom
+  Qwen runtime image.
+- Keep GKE manifests flat and cleanup limited to `kubectl delete -k`; do not add
+  Terraform or deployment-script frameworks for this POC.
