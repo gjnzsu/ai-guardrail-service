@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 
 class EntityType(StrEnum):
@@ -26,8 +26,8 @@ DatasetSplit = Literal["train", "validation", "challenge"]
 
 class EntitySpan(BaseModel):
     type: EntityType
-    start: int = Field(ge=0)
-    end: int = Field(gt=0)
+    start: StrictInt = Field(ge=0)
+    end: StrictInt = Field(gt=0)
 
     @model_validator(mode="after")
     def validate_range(self) -> EntitySpan:
@@ -59,7 +59,7 @@ class LabeledExample(BaseModel):
 
 
 class CandidateDetection(EntitySpan):
-    message_index: int = Field(ge=0)
+    message_index: StrictInt = Field(ge=0)
     source: DetectionSource
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 

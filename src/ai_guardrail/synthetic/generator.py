@@ -4,8 +4,10 @@ import random
 import re
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from ai_guardrail.domain import EntitySpan, EntityType, LabeledExample
 from ai_guardrail.io import write_jsonl
@@ -13,6 +15,22 @@ from ai_guardrail.synthetic.catalog import CATALOG
 from ai_guardrail.synthetic.templates import TEMPLATES, Template
 
 PLACEHOLDER = re.compile(r"\{([A-Z_]+)\}")
+
+
+class _SyntheticCounts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    train: StrictInt = Field(gt=0)
+    validation: StrictInt = Field(gt=0)
+    challenge: StrictInt = Field(gt=0)
+
+
+class _SyntheticConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generator_version: Literal["v1"]
+    seed: StrictInt
+    counts: _SyntheticCounts
 
 
 def render_template(
@@ -80,9 +98,14 @@ def generate_split(*, split: str, count: int, seed: int) -> list[LabeledExample]
 
 
 def generate_dataset(config_path: Path, output_dir: Path) -> dict[str, int]:
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    seed = int(config["seed"])
-    counts = {name: int(value) for name, value in config["counts"].items()}
+    try:
+        config = _SyntheticConfig.model_validate(
+            yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        )
+    except (OSError, UnicodeError, yaml.YAMLError, ValidationError):
+        raise ValueError("invalid synthetic dataset configuration") from None
+    seed = config.seed
+    counts = config.counts.model_dump()
     for offset, split in enumerate(("train", "validation", "challenge")):
         records = generate_split(split=split, count=counts[split], seed=seed + offset)
         filename = "challenge.candidates.jsonl" if split == "challenge" else f"{split}.jsonl"

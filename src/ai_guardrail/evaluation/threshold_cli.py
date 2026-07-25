@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -15,6 +14,10 @@ from ai_guardrail.evaluation.threshold_artifact import (
     build_threshold_artifact,
 )
 from ai_guardrail.io import read_jsonl
+from ai_guardrail.ner.manifest import (
+    build_dataset_provenance,
+    verify_model_artifact,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +56,16 @@ async def run() -> None:
     args = parse_args()
     examples = read_jsonl(args.validation)
     _require_validation_examples(examples)
+    validation_provenance = build_dataset_provenance(
+        args.validation,
+        examples,
+    )
+    verified = verify_model_artifact(args.ner_model)
+    if (
+        validation_provenance
+        != verified.manifest["datasets"]["validation"]
+    ):
+        raise ValueError("invalid threshold selection provenance")
     detector = NerDetector.load(
         args.ner_model,
         threshold=0.0,
@@ -76,9 +89,7 @@ async def run() -> None:
         )
     payload = build_threshold_artifact(
         model_path=args.ner_model,
-        validation_sha256=hashlib.sha256(
-            args.validation.read_bytes()
-        ).hexdigest(),
+        validation_provenance=validation_provenance,
         candidate_thresholds=THRESHOLDS,
         selected_threshold=threshold,
     )

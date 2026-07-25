@@ -2,6 +2,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+import pytest
+
 from ai_guardrail.domain import EntityType
 from ai_guardrail.io import read_jsonl
 from ai_guardrail.synthetic.catalog import CATALOG
@@ -147,3 +149,24 @@ def test_generate_dataset_writes_configured_counts_and_filenames(tmp_path: Path)
     assert len(read_jsonl(output_dir / "train.jsonl")) == counts["train"]
     assert len(read_jsonl(output_dir / "validation.jsonl")) == counts["validation"]
     assert len(read_jsonl(output_dir / "challenge.candidates.jsonl")) == counts["challenge"]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "generator_version: v2\nseed: 7\ncounts:\n  train: 1\n  validation: 1\n  challenge: 1\n",
+        "generator_version: v1\nseed: 7\ncounts:\n  train: 1\n  validation: 1\n",
+        "generator_version: v1\nseed: 7\ncounts:\n  train: '1'\n  validation: 1\n  challenge: 1\n",
+        "generator_version: v1\nseed: 7\ncounts:\n  train: 0\n  validation: 1\n  challenge: 1\n",
+        "generator_version: v1\nseed: true\ncounts:\n  train: 1\n  validation: 1\n  challenge: 1\n",
+    ],
+)
+def test_generate_dataset_rejects_unsupported_or_non_strict_config(
+    tmp_path: Path,
+    config: str,
+) -> None:
+    config_path = tmp_path / "synthetic.yaml"
+    config_path.write_text(config, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid synthetic dataset configuration"):
+        generate_dataset(config_path, tmp_path / "output")

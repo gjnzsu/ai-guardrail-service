@@ -14,7 +14,29 @@ from ai_guardrail.ner import manifest as manifest_module
 from ai_guardrail.ner import train as train_module
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABEL_TO_ID
 from ai_guardrail.ner.manifest import ARTIFACT_NAME, BASE_CHECKPOINT
-from ai_guardrail.ner.train import NerDataset, _artifact_checksums
+from ai_guardrail.ner.train import (
+    NerDataset,
+    _artifact_checksums,
+    validate_training_datasets,
+)
+
+
+def dataset_example(
+    *,
+    record_id: str,
+    split: str,
+    family: str,
+    text: str,
+) -> LabeledExample:
+    return LabeledExample(
+        id=record_id,
+        language="en",
+        text=text,
+        entities=[],
+        template_family=family,
+        generator_version="v1",
+        split=split,
+    )
 
 
 def test_training_cli_help_requires_dataset_and_output_paths() -> None:
@@ -62,7 +84,7 @@ runpy.run_module("ai_guardrail.ner.train", run_name="__main__")
 
 class FakeTrainingTokenizer:
     def __call__(self, text: str, **kwargs: object) -> dict[str, list[object]]:
-        assert text == "Jane Cooper"
+        assert text.startswith("Jane Cooper")
         assert kwargs == {
             "return_offsets_mapping": True,
             "truncation": True,
@@ -121,6 +143,110 @@ def test_artifact_checksums_are_stable_and_exclude_manifest_and_checkpoints(
         "model.safetensors": "9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4",
         "tokenizer.json": "5f97e3774c51edd1d63706c2ec3826c564a067794770cdab0f8c4797971cacf9",
     }
+
+
+def test_training_dataset_validation_records_hashed_provenance(
+    tmp_path: Path,
+) -> None:
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "validation.jsonl"
+    write_jsonl(
+        train_path,
+        [dataset_example(record_id="train-1", split="train", family="train-a", text="A")],
+    )
+    write_jsonl(
+        validation_path,
+        [
+            dataset_example(
+                record_id="validation-1",
+                split="validation",
+                family="validation-a",
+                text="B",
+            )
+        ],
+    )
+
+    provenance = validate_training_datasets(train_path, validation_path)
+
+    assert provenance["train"]["sha256"] == manifest_module.sha256_file(train_path)
+    assert provenance["validation"]["sha256"] == manifest_module.sha256_file(
+        validation_path
+    )
+    assert provenance["train"]["record_count"] == 1
+    assert provenance["train"]["template_families"] == ["train-a"]
+    assert provenance["validation"]["template_families"] == ["validation-a"]
+    assert provenance["train"]["record_id_hashes"] == [
+        manifest_module.sha256_bytes(b"train-1")
+    ]
+    assert provenance["validation"]["content_hashes"] == [
+        manifest_module.sha256_bytes(b"B")
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty-train",
+        "wrong-train-label",
+        "swapped",
+        "same-path",
+        "same-sha",
+        "duplicate-id",
+        "duplicate-train-id",
+        "duplicate-validation-id",
+        "family-overlap",
+        "content-overlap",
+    ],
+)
+def test_training_dataset_validation_rejects_contaminated_splits(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "validation.jsonl"
+    train = [
+        dataset_example(
+            record_id="train-1",
+            split="train",
+            family="train-family",
+            text="train text",
+        )
+    ]
+    validation = [
+        dataset_example(
+            record_id="validation-1",
+            split="validation",
+            family="validation-family",
+            text="validation text",
+        )
+    ]
+    if case == "empty-train":
+        train = []
+    elif case == "wrong-train-label":
+        train[0] = train[0].model_copy(update={"split": "validation"})
+    elif case == "swapped":
+        train, validation = validation, train
+    elif case == "duplicate-id":
+        validation[0] = validation[0].model_copy(update={"id": "train-1"})
+    elif case == "duplicate-train-id":
+        train.append(train[0].model_copy())
+    elif case == "duplicate-validation-id":
+        validation.append(validation[0].model_copy())
+    elif case == "family-overlap":
+        validation[0] = validation[0].model_copy(
+            update={"template_family": "train-family"}
+        )
+    elif case == "content-overlap":
+        validation[0] = validation[0].model_copy(update={"text": "train text"})
+    write_jsonl(train_path, train)
+    write_jsonl(validation_path, validation)
+    if case == "same-path":
+        validation_path = train_path
+    elif case == "same-sha":
+        validation_path.write_bytes(train_path.read_bytes())
+
+    with pytest.raises(ValueError, match="invalid training dataset provenance"):
+        validate_training_datasets(train_path, validation_path)
 
 
 def test_training_rejects_output_tree_containing_input_dataset(
@@ -349,6 +475,18 @@ class FakeTrainer:
     def save_model(self, output: Path) -> None:
         assert self.trained
         output.mkdir(parents=True, exist_ok=True)
+        (output / "config.json").write_text(
+            json.dumps(
+                {
+                    "label2id": LABEL_TO_ID,
+                    "id2label": {
+                        str(identifier): label
+                        for identifier, label in ID_TO_LABEL.items()
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         (output / "model.safetensors").write_bytes(b"model")
 
     def evaluate(self) -> dict[str, object]:
@@ -374,9 +512,13 @@ def test_training_main_pins_revision_and_writes_artifact_manifest(
                 LabeledExample(
                     id=f"{split}-1",
                     language="en",
-                    text="Jane Cooper",
+                    text=(
+                        "Jane Cooper"
+                        if split == "train"
+                        else "Jane Cooper validation"
+                    ),
                     entities=[EntitySpan(type=EntityType.PERSON, start=0, end=11)],
-                    template_family="person",
+                    template_family=f"person-{split}",
                     generator_version="v1",
                     split=split,
                 )
@@ -451,7 +593,20 @@ def test_training_main_pins_revision_and_writes_artifact_manifest(
     assert manifest["seed"] == 7
     assert manifest["threshold"] is None
     assert manifest["metrics"] == {"eval_loss": 0.25, "eval_runtime": 1.0}
+    assert manifest["manifest_schema_version"] == 2
+    assert manifest["datasets"]["train"]["sha256"] == manifest_module.sha256_file(
+        train_path
+    )
+    assert manifest["datasets"]["validation"]["sha256"] == (
+        manifest_module.sha256_file(validation_path)
+    )
+    assert manifest["datasets"]["train"]["template_families"] == ["person-train"]
+    assert manifest["datasets"]["validation"]["template_families"] == [
+        "person-validation"
+    ]
+    assert "Jane Cooper" not in json.dumps(manifest)
     assert manifest["artifact_checksums"] == {
+        "config.json": manifest_module.sha256_file(output / "config.json"),
         "model.safetensors": (
             "9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4"
         ),

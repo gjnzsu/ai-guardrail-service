@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import time
 from pathlib import Path
@@ -9,39 +8,12 @@ from typing import Any
 
 from ai_guardrail.domain import DetectionSource, DetectorOutput
 from ai_guardrail.ner.alignment import decode_bio_predictions
-from ai_guardrail.ner.labels import LABELS
+from ai_guardrail.ner.labels import ID_TO_LABEL, LABELS
 from ai_guardrail.ner.manifest import (
     ARTIFACT_NAME,
-    BASE_CHECKPOINT,
-    GENERATOR_VERSION,
     is_exact_label_mapping,
+    verify_model_artifact,
 )
-
-_MANIFEST_NAME = "training-manifest.json"
-
-
-def _validate_artifact_identity(model_path: Path) -> None:
-    if (
-        model_path.name != ARTIFACT_NAME
-        or model_path.is_symlink()
-        or not model_path.is_dir()
-    ):
-        raise ValueError("invalid NER model artifact")
-    manifest_path = model_path / _MANIFEST_NAME
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise ValueError("invalid NER model artifact")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        raise ValueError("invalid NER model artifact") from None
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("artifact_name") != ARTIFACT_NAME
-        or manifest.get("base_checkpoint") != BASE_CHECKPOINT
-        or manifest.get("generator_version") != GENERATOR_VERSION
-        or not is_exact_label_mapping(manifest.get("label_mapping"))
-    ):
-        raise ValueError("invalid NER model artifact")
 
 
 class NerDetector:
@@ -62,7 +34,7 @@ class NerDetector:
 
     @classmethod
     def load(cls, model_path: Path, threshold: float) -> NerDetector:
-        _validate_artifact_identity(model_path)
+        verify_model_artifact(model_path)
 
         from transformers import AutoModelForTokenClassification, AutoTokenizer
 
@@ -75,6 +47,11 @@ class NerDetector:
             model_path,
             local_files_only=True,
         ).to("cpu")
+        if (
+            not is_exact_label_mapping(getattr(model.config, "label2id", None))
+            or getattr(model.config, "id2label", None) != ID_TO_LABEL
+        ):
+            raise ValueError("invalid NER model artifact")
         return cls(
             tokenizer=tokenizer,
             model=model,

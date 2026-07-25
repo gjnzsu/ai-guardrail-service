@@ -22,6 +22,7 @@ from ai_guardrail.evaluation.threshold_artifact import (
     load_selected_threshold,
 )
 from ai_guardrail.io import read_jsonl
+from ai_guardrail.ner.manifest import sha256_bytes
 
 
 def sha256(path: Path) -> str:
@@ -106,10 +107,44 @@ def _require_challenge_examples(
     if not examples or any(
         example.split != "challenge"
         for example in examples
-    ):
+    ) or len({example.id for example in examples}) != len(examples):
         raise ValueError(
             "benchmark requires a non-empty challenge split"
         )
+
+
+def _require_challenge_isolation(
+    examples: list[LabeledExample],
+    training_provenance: dict[str, object],
+) -> None:
+    prior_ids: set[str] = set()
+    prior_families: set[str] = set()
+    prior_content: set[str] = set()
+    for split in ("train", "validation"):
+        provenance = training_provenance[split]
+        if not isinstance(provenance, dict):
+            raise ValueError("invalid challenge provenance")
+        prior_ids.update(provenance["record_id_hashes"])
+        prior_families.update(provenance["template_families"])
+        prior_content.update(provenance["content_hashes"])
+    challenge_ids = {
+        sha256_bytes(example.id.encode("utf-8"))
+        for example in examples
+    }
+    challenge_families = {
+        example.template_family
+        for example in examples
+    }
+    challenge_content = {
+        sha256_bytes(example.text.encode("utf-8"))
+        for example in examples
+    }
+    if (
+        not challenge_ids.isdisjoint(prior_ids)
+        or not challenge_families.isdisjoint(prior_families)
+        or not challenge_content.isdisjoint(prior_content)
+    ):
+        raise ValueError("invalid challenge provenance")
 
 
 async def run() -> None:
@@ -119,6 +154,10 @@ async def run() -> None:
     threshold = load_selected_threshold(
         args.ner_threshold_artifact,
         args.ner_model,
+    )
+    _require_challenge_isolation(
+        examples,
+        threshold.training_provenance,
     )
 
     regex = RegexDetector.from_yaml(args.regex_config)
@@ -152,6 +191,7 @@ async def run() -> None:
         "challenge_sha256": sha256(args.challenge),
         "ner_model_path": args.ner_model.name,
         "ner_manifest_sha256": threshold.manifest_sha256,
+        "ner_artifact_sha256": threshold.model_artifact_sha256,
         "ner_threshold": threshold.value,
         "ner_threshold_artifact_sha256": (
             threshold.artifact_sha256

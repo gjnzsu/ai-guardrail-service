@@ -16,16 +16,61 @@ from ai_guardrail.domain import (
 )
 from ai_guardrail.evaluation import threshold_cli
 from ai_guardrail.io import write_jsonl
+from ai_guardrail.ner.labels import LABEL_TO_ID
+from ai_guardrail.ner.manifest import (
+    ARTIFACT_NAME,
+    build_dataset_provenance,
+    sha256_bytes,
+    sha256_file,
+)
+from ai_guardrail.ner.manifest import (
+    write_manifest as write_training_manifest,
+)
 
 
-def write_manifest(model_path: Path) -> Path:
+def write_manifest(model_path: Path, validation_path: Path) -> tuple[Path, str]:
     model_path.mkdir()
+    config = {
+        "label2id": LABEL_TO_ID,
+        "id2label": {str(value): key for key, value in LABEL_TO_ID.items()},
+    }
+    (model_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (model_path / "model.safetensors").write_bytes(b"weights")
+    (model_path / "tokenizer.json").write_bytes(b"tokenizer")
+    checksums = {
+        name: sha256_file(model_path / name)
+        for name in ("config.json", "model.safetensors", "tokenizer.json")
+    }
     manifest_path = model_path / "training-manifest.json"
-    manifest_path.write_text(
-        json.dumps({"artifact_name": "ai-guardrail-ner-en-v1"}) + "\n",
-        encoding="utf-8",
+    validation_examples = threshold_cli.read_jsonl(validation_path)
+    manifest = {
+        "manifest_schema_version": 2,
+        "artifact_name": ARTIFACT_NAME,
+        "base_checkpoint": "distilbert/distilbert-base-cased",
+        "base_revision": "immutable",
+        "dataset_version": "v1",
+        "generator_version": "v1",
+        "label_mapping": LABEL_TO_ID,
+        "artifact_checksums": checksums,
+        "datasets": {
+            "train": {
+                "sha256": "1" * 64,
+                "record_count": 1,
+                "record_id_hashes": ["2" * 64],
+                "template_families": ["person-train"],
+                "content_hashes": ["3" * 64],
+            },
+            "validation": build_dataset_provenance(
+                validation_path,
+                validation_examples,
+            ),
+        },
+    }
+    write_training_manifest(manifest_path, manifest)
+    artifact_sha256 = sha256_bytes(
+        json.dumps(checksums, sort_keys=True, separators=(",", ":")).encode()
     )
-    return manifest_path
+    return manifest_path, artifact_sha256
 
 
 def example(split: str) -> LabeledExample:
@@ -92,7 +137,7 @@ async def test_threshold_cli_writes_finite_validation_selected_artifact(
     output_path = tmp_path / "selected-threshold.json"
     model_path = tmp_path / "ai-guardrail-ner-en-v1"
     write_jsonl(validation_path, [example("validation")])
-    manifest_path = write_manifest(model_path)
+    manifest_path, artifact_sha256 = write_manifest(model_path, validation_path)
     monkeypatch.setattr(
         threshold_cli,
         "parse_args",
@@ -114,12 +159,18 @@ async def test_threshold_cli_writes_finite_validation_selected_artifact(
     assert payload == {
         "candidate_thresholds": threshold_cli.THRESHOLDS,
         "model_version": "ai-guardrail-ner-en-v1",
+        "ner_artifact_sha256": artifact_sha256,
         "ner_manifest_sha256": hashlib.sha256(
             manifest_path.read_bytes()
         ).hexdigest(),
         "selected_threshold": 0.8,
         "validation_sha256": hashlib.sha256(validation_path.read_bytes()).hexdigest(),
+        "validation_provenance": build_dataset_provenance(
+            validation_path,
+            [example("validation")],
+        ),
     }
+    assert "Jane Cooper" not in output_path.read_text(encoding="utf-8")
     assert math.isfinite(payload["selected_threshold"])
 
 
@@ -164,7 +215,7 @@ async def test_threshold_cli_does_not_write_artifact_after_detector_failure(
     output_path = tmp_path / "threshold.json"
     model_path = tmp_path / "ai-guardrail-ner-en-v1"
     write_jsonl(validation_path, [example("validation")])
-    write_manifest(model_path)
+    write_manifest(model_path, validation_path)
     monkeypatch.setattr(
         threshold_cli,
         "parse_args",
@@ -187,4 +238,43 @@ async def test_threshold_cli_does_not_write_artifact_after_detector_failure(
         await threshold_cli.run()
 
     assert "safe_failure" not in str(exc_info.value)
+    assert not output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_threshold_cli_rejects_validation_not_bound_to_training_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validation_path = tmp_path / "validation.jsonl"
+    output_path = tmp_path / "threshold.json"
+    model_path = tmp_path / ARTIFACT_NAME
+    write_jsonl(validation_path, [example("validation")])
+    write_manifest(model_path, validation_path)
+    changed = example("validation").model_copy(
+        update={"text": "Different validation content"}
+    )
+    write_jsonl(validation_path, [changed])
+    load_called = False
+
+    def unexpected_load(*args: object, **kwargs: object) -> FakeNerDetector:
+        nonlocal load_called
+        load_called = True
+        return FakeNerDetector()
+
+    monkeypatch.setattr(
+        threshold_cli,
+        "parse_args",
+        lambda: argparse.Namespace(
+            validation=validation_path,
+            ner_model=model_path,
+            output=output_path,
+        ),
+    )
+    monkeypatch.setattr(threshold_cli.NerDetector, "load", unexpected_load)
+
+    with pytest.raises(ValueError, match="threshold selection provenance"):
+        await threshold_cli.run()
+
+    assert load_called is False
     assert not output_path.exists()

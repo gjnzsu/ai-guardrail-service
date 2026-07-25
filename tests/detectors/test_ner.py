@@ -1,6 +1,7 @@
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -9,7 +10,12 @@ from transformers import AutoModelForTokenClassification, AutoTokenizer
 from ai_guardrail.detectors.ner import NerDetector
 from ai_guardrail.domain import EntityType
 from ai_guardrail.ner.labels import LABEL_TO_ID
-from ai_guardrail.ner.manifest import ARTIFACT_NAME, BASE_CHECKPOINT, GENERATOR_VERSION
+from ai_guardrail.ner.manifest import (
+    ARTIFACT_NAME,
+    BASE_CHECKPOINT,
+    GENERATOR_VERSION,
+    sha256_file,
+)
 
 
 class FakeBatch(dict):
@@ -271,6 +277,10 @@ async def test_ner_detector_evaluates_model_in_inference_mode() -> None:
 class LoadableFakeModel(FakeModel):
     def __init__(self) -> None:
         self.devices: list[str] = []
+        self.config = SimpleNamespace(
+            label2id=LABEL_TO_ID,
+            id2label={value: key for key, value in LABEL_TO_ID.items()},
+        )
 
     def to(self, device: str) -> "LoadableFakeModel":
         self.devices.append(device)
@@ -278,7 +288,15 @@ class LoadableFakeModel(FakeModel):
 
 
 def write_valid_manifest(model_path: Path, **overrides: object) -> None:
+    config = {
+        "label2id": LABEL_TO_ID,
+        "id2label": {str(value): key for key, value in LABEL_TO_ID.items()},
+    }
+    (model_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (model_path / "model.safetensors").write_bytes(b"weights")
+    (model_path / "tokenizer.json").write_bytes(b"tokenizer")
     manifest: dict[str, object] = {
+        "manifest_schema_version": 2,
         "artifact_name": ARTIFACT_NAME,
         "base_checkpoint": BASE_CHECKPOINT,
         "base_revision": "immutable-revision",
@@ -295,7 +313,26 @@ def write_valid_manifest(model_path: Path, **overrides: object) -> None:
             "torch": "2.5.0",
             "transformers": "4.49.0",
         },
-        "artifact_checksums": {},
+        "artifact_checksums": {
+            name: sha256_file(model_path / name)
+            for name in ("config.json", "model.safetensors", "tokenizer.json")
+        },
+        "datasets": {
+            "train": {
+                "sha256": "1" * 64,
+                "record_count": 1,
+                "record_id_hashes": ["2" * 64],
+                "template_families": ["train-family"],
+                "content_hashes": ["3" * 64],
+            },
+            "validation": {
+                "sha256": "4" * 64,
+                "record_count": 1,
+                "record_id_hashes": ["5" * 64],
+                "template_families": ["validation-family"],
+                "content_hashes": ["6" * 64],
+            },
+        },
     }
     manifest.update(overrides)
     (model_path / "training-manifest.json").write_text(
@@ -395,3 +432,29 @@ def test_ner_detector_rejects_mismatched_manifest_before_ml_loading(
         NerDetector.load(model_path, threshold=0.5)
 
     assert str(private_value) not in str(exc_info.value)
+
+
+def test_ner_detector_rejects_loaded_model_label_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_path = tmp_path / ARTIFACT_NAME
+    model_path.mkdir()
+    write_valid_manifest(model_path)
+    model = LoadableFakeModel()
+    model.config.label2id = {**LABEL_TO_ID, "O": 99}
+    monkeypatch.setattr(
+        AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: FakeTokenizer(),
+    )
+    monkeypatch.setattr(
+        AutoModelForTokenClassification,
+        "from_pretrained",
+        lambda *args, **kwargs: model,
+    )
+
+    with pytest.raises(ValueError, match="invalid NER model artifact") as exc_info:
+        NerDetector.load(model_path, threshold=0.5)
+
+    assert "99" not in str(exc_info.value)

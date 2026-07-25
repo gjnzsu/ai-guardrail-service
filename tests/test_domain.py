@@ -38,3 +38,21 @@ def test_candidate_detection_requires_bounded_confidence() -> None:
             source=DetectionSource.NER,
             confidence=1.1,
         )
+
+
+@pytest.mark.parametrize("value", [True, "1", 1.0])
+def test_entity_offsets_require_strict_integers(value: object) -> None:
+    with pytest.raises(ValidationError):
+        EntitySpan(type=EntityType.PERSON, start=value, end=4)
+
+
+@pytest.mark.parametrize("value", [True, "0", 0.0])
+def test_candidate_message_index_requires_strict_integer(value: object) -> None:
+    with pytest.raises(ValidationError):
+        CandidateDetection(
+            message_index=value,
+            type=EntityType.PERSON,
+            start=0,
+            end=4,
+            source=DetectionSource.NER,
+        )

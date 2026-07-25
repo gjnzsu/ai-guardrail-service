@@ -11,7 +11,9 @@ from ai_guardrail.ner.manifest import (
     ARTIFACT_NAME,
     BASE_CHECKPOINT,
     GENERATOR_VERSION,
+    build_dataset_provenance,
     build_manifest,
+    sha256_bytes,
     sha256_file,
     write_manifest,
 )
@@ -83,17 +85,60 @@ def _load_ml_dependencies() -> tuple[Any, ...]:
     )
 
 
-def _validate_generator_version(train_path: Path, validation_path: Path) -> str:
+def validate_training_datasets(
+    train_path: Path,
+    validation_path: Path,
+) -> dict[str, Any]:
     try:
-        datasets = (read_jsonl(train_path), read_jsonl(validation_path))
-    except ValueError:
+        if train_path.resolve() == validation_path.resolve():
+            raise ValueError
+        train_examples = read_jsonl(train_path)
+        validation_examples = read_jsonl(validation_path)
+        train_sha256 = sha256_file(train_path)
+        validation_sha256 = sha256_file(validation_path)
+    except (OSError, ValueError):
         raise ValueError("invalid training dataset provenance") from None
-    if any(
-        {example.generator_version for example in examples} != {GENERATOR_VERSION}
-        for examples in datasets
+    if (
+        not train_examples
+        or not validation_examples
+        or train_sha256 == validation_sha256
+        or any(example.split != "train" for example in train_examples)
+        or any(example.split != "validation" for example in validation_examples)
+        or any(
+            example.generator_version != GENERATOR_VERSION
+            for example in train_examples + validation_examples
+        )
     ):
         raise ValueError("invalid training dataset provenance")
-    return GENERATOR_VERSION
+    train_ids = [example.id for example in train_examples]
+    validation_ids = [example.id for example in validation_examples]
+    train_families = {example.template_family for example in train_examples}
+    validation_families = {
+        example.template_family for example in validation_examples
+    }
+    train_content_hashes = {
+        sha256_bytes(example.text.encode("utf-8"))
+        for example in train_examples
+    }
+    validation_content_hashes = {
+        sha256_bytes(example.text.encode("utf-8"))
+        for example in validation_examples
+    }
+    if (
+        len(set(train_ids)) != len(train_ids)
+        or len(set(validation_ids)) != len(validation_ids)
+        or not set(train_ids).isdisjoint(validation_ids)
+        or not train_families.isdisjoint(validation_families)
+        or not train_content_hashes.isdisjoint(validation_content_hashes)
+    ):
+        raise ValueError("invalid training dataset provenance")
+    return {
+        "train": build_dataset_provenance(train_path, train_examples),
+        "validation": build_dataset_provenance(
+            validation_path,
+            validation_examples,
+        ),
+    }
 
 
 def main() -> None:
@@ -110,7 +155,10 @@ def main() -> None:
         for dataset_path in (args.train, args.validation)
     ):
         raise ValueError("output directory must not contain an input dataset")
-    generator_version = _validate_generator_version(args.train, args.validation)
+    dataset_provenance = validate_training_datasets(
+        args.train,
+        args.validation,
+    )
     args.output.mkdir(parents=True, exist_ok=True)
 
     (
@@ -174,7 +222,7 @@ def main() -> None:
         base_checkpoint=args.base_checkpoint,
         base_revision=resolved_revision,
         dataset_version="v1",
-        generator_version=generator_version,
+        generator_version=GENERATOR_VERSION,
         label_mapping=LABEL_TO_ID,
         seed=args.seed,
         threshold=None,
@@ -187,6 +235,7 @@ def main() -> None:
             "weight_decay": 0.01,
             "max_length": 512,
         },
+        datasets=dataset_provenance,
     )
     manifest["artifact_checksums"] = _artifact_checksums(args.output)
     write_manifest(args.output / _MANIFEST_NAME, manifest)
