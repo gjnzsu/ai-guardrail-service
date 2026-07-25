@@ -41,7 +41,160 @@ patterns:
 
 def test_invalid_regex_fails_at_startup(tmp_path: Path) -> None:
     config = tmp_path / "patterns.yaml"
-    config.write_text("version: regex-v1\npatterns:\n  EMAIL:\n    - '['\n", encoding="utf-8")
+    config.write_text(
+        """
+version: regex-v1
+patterns:
+  EMAIL:
+    - '['
+  API_KEY:
+    - api-key
+  CUSTOMER_ID:
+    - customer-id
+""".strip(),
+        encoding="utf-8",
+    )
 
     with pytest.raises(ValueError, match="invalid regex"):
         RegexDetector.from_yaml(config)
+
+
+@pytest.mark.parametrize(
+    ("config_text", "message", "unsafe_value"),
+    [
+        ("- regex-v1\n", "invalid regex configuration", "regex-v1"),
+        (
+            "version: [private-value\n",
+            "invalid regex configuration",
+            "private-value",
+        ),
+        ("patterns: {}\n", "missing regex version", "patterns"),
+        ("version: ''\npatterns: {}\n", "missing regex version", "patterns"),
+        (
+            "version: regex-v1\npatterns: scalar-patterns\n",
+            "invalid regex patterns",
+            "scalar-patterns",
+        ),
+        (
+            "version: regex-v1\npatterns:\n  EMAIL:\n    - email\n  API_KEY:\n    - api-key\n",
+            "missing required regex pattern types",
+            "API_KEY",
+        ),
+        (
+            "version: regex-v1\npatterns:\n  EMAIL: email\n  API_KEY:\n    - api-key\n"
+            "  CUSTOMER_ID:\n    - customer-id\n",
+            "invalid regex pattern list",
+            "email",
+        ),
+        (
+            "version: regex-v1\npatterns:\n  EMAIL: []\n  API_KEY:\n    - api-key\n"
+            "  CUSTOMER_ID:\n    - customer-id\n",
+            "invalid regex pattern list",
+            "EMAIL",
+        ),
+        (
+            "version: regex-v1\npatterns:\n  EMAIL:\n    - 42\n  API_KEY:\n    - api-key\n"
+            "  CUSTOMER_ID:\n    - customer-id\n",
+            "invalid regex pattern",
+            "42",
+        ),
+        (
+            "version: regex-v1\npatterns:\n  EMAIL:\n    - email\n  API_KEY:\n    - api-key\n"
+            "  CUSTOMER_ID:\n    - customer-id\n  SENSITIVE_UNKNOWN:\n    - secret\n",
+            "unknown entity type in regex configuration",
+            "SENSITIVE_UNKNOWN",
+        ),
+    ],
+)
+def test_regex_rejects_malformed_schema_without_echoing_input(
+    tmp_path: Path,
+    config_text: str,
+    message: str,
+    unsafe_value: str,
+) -> None:
+    config = tmp_path / "patterns.yaml"
+    config.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message) as exc_info:
+        RegexDetector.from_yaml(config)
+
+    assert unsafe_value not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_regex_deduplicates_duplicate_configured_patterns(tmp_path: Path) -> None:
+    config = tmp_path / "patterns.yaml"
+    config.write_text(
+        """
+version: regex-v1
+patterns:
+  EMAIL:
+    - '\\b[A-Za-z]+@[A-Za-z]+\\.test\\b'
+    - '\\b[A-Za-z]+@[A-Za-z]+\\.test\\b'
+  API_KEY:
+    - '\\bapi-[A-Za-z0-9]+\\b'
+  CUSTOMER_ID:
+    - '\\bCUST-[0-9]+\\b'
+""".strip(),
+        encoding="utf-8",
+    )
+    text = "email user@example.test"
+
+    output = await RegexDetector.from_yaml(config).detect(text)
+
+    detected_spans = [
+        (candidate.type, candidate.start, candidate.end) for candidate in output.candidates
+    ]
+    assert detected_spans == [(EntityType.EMAIL, 6, 23)]
+
+
+@pytest.mark.asyncio
+async def test_regex_orders_candidates_by_offset_then_type(tmp_path: Path) -> None:
+    config = tmp_path / "patterns.yaml"
+    config.write_text(
+        """
+version: regex-v1
+patterns:
+  CUSTOMER_ID:
+    - '\\bCUST-[0-9]+\\b'
+  API_KEY:
+    - '\\bapi-[A-Za-z0-9]+\\b'
+  EMAIL:
+    - '\\b[A-Za-z]+@[A-Za-z]+\\.test\\b'
+""".strip(),
+        encoding="utf-8",
+    )
+    text = "api-token then user@example.test then CUST-93821"
+
+    output = await RegexDetector.from_yaml(config).detect(text)
+
+    assert [candidate.type for candidate in output.candidates] == [
+        EntityType.API_KEY,
+        EntityType.EMAIL,
+        EntityType.CUSTOMER_ID,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_regex_uses_exact_python_offsets_after_unicode(tmp_path: Path) -> None:
+    config = tmp_path / "patterns.yaml"
+    config.write_text(
+        """
+version: regex-v1
+patterns:
+  EMAIL:
+    - '\\b[A-Za-z]+@[A-Za-z]+\\.test\\b'
+  API_KEY:
+    - '\\bapi-[A-Za-z0-9]+\\b'
+  CUSTOMER_ID:
+    - '\\bCUST-[0-9]+\\b'
+""".strip(),
+        encoding="utf-8",
+    )
+    text = "前缀 😀 user@example.test"
+
+    output = await RegexDetector.from_yaml(config).detect(text)
+
+    candidate = output.candidates[0]
+    assert (candidate.start, candidate.end) == (len("前缀 😀 "), len(text))
+    assert text[candidate.start : candidate.end] == "user@example.test"
