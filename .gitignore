@@ -29,3 +29,6 @@ Thumbs.db
 
 # Isolated implementation worktrees
 .worktrees/
+
+# Subagent-driven development scratch files
+.superpowers/
