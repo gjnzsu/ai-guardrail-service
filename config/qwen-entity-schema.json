@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entities"],
+  "properties": {
+    "entities": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "text"],
+        "properties": {
+          "type": {
+            "enum": [
+              "PERSON",
+              "ADDRESS",
+              "EMAIL",
+              "API_KEY",
+              "CUSTOMER_ID",
+              "INTERNAL_PROJECT"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "occurrence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          }
+        }
+      }
+    }
+  }
+}
