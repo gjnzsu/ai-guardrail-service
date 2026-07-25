@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 
 from ai_guardrail.domain import (
     CandidateDetection,
@@ -15,14 +16,18 @@ def score_spans(
     gold: list[EntitySpan],
     predicted: list[CandidateDetection],
 ) -> CountMetrics:
-    gold_keys = {(entity.type, entity.start, entity.end) for entity in gold}
-    predicted_keys = {
+    gold_counts = Counter(
+        (entity.type, entity.start, entity.end)
+        for entity in gold
+    )
+    predicted_counts = Counter(
         (entity.type, entity.start, entity.end) for entity in predicted
-    }
+    )
+    matched = gold_counts & predicted_counts
     return {
-        "true_positive": len(gold_keys & predicted_keys),
-        "false_positive": len(predicted_keys - gold_keys),
-        "false_negative": len(gold_keys - predicted_keys),
+        "true_positive": matched.total(),
+        "false_positive": (predicted_counts - matched).total(),
+        "false_negative": (gold_counts - matched).total(),
     }
 
 

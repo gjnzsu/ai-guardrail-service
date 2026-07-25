@@ -35,12 +35,19 @@ def candidate_key(
 
 def output_signature(
     output: DetectorOutput,
-) -> tuple[str, frozenset[tuple[EntityType, int, int]]]:
+) -> tuple[
+    str,
+    str | None,
+    tuple[tuple[EntityType, int, int], ...],
+]:
     return (
         output.status,
-        frozenset(
-            candidate_key(item)
-            for item in output.candidates
+        output.error_code,
+        tuple(
+            sorted(
+                candidate_key(item)
+                for item in output.candidates
+            )
         ),
     )
 
@@ -59,22 +66,43 @@ class AuthoritativeUnionDetector:
             self.regex.detect(text, message_index),
             self.ner.detect(text, message_index),
         )
-        candidates = list(regex_output.candidates)
+        regex_succeeded = regex_output.status == "success"
+        ner_succeeded = ner_output.status == "success"
+        candidates = (
+            list(regex_output.candidates)
+            if regex_succeeded
+            else []
+        )
         seen = {candidate_key(candidate) for candidate in candidates}
-        for candidate in ner_output.candidates:
-            if candidate.type in REGEX_AUTHORITATIVE_TYPES:
+        for candidate in (
+            ner_output.candidates
+            if ner_succeeded
+            else []
+        ):
+            if (
+                regex_succeeded
+                and candidate.type in REGEX_AUTHORITATIVE_TYPES
+            ):
                 continue
             if candidate_key(candidate) not in seen:
                 candidates.append(candidate)
                 seen.add(candidate_key(candidate))
 
-        statuses = {regex_output.status, ner_output.status}
-        if "timeout" in statuses:
-            status = "timeout"
-        elif "error" in statuses:
-            status = "error"
-        else:
+        if regex_succeeded or ner_succeeded:
             status = "success"
+            error_code = (
+                None
+                if regex_succeeded and ner_succeeded
+                else "partial_detector_failure"
+            )
+        else:
+            statuses = {regex_output.status, ner_output.status}
+            status = (
+                "timeout"
+                if "timeout" in statuses
+                else "error"
+            )
+            error_code = "combined_detector_failure"
         return DetectorOutput(
             detector="regex+ner",
             model_version=(
@@ -93,7 +121,7 @@ class AuthoritativeUnionDetector:
                 regex_output.invalid_candidate_count
                 + ner_output.invalid_candidate_count
             ),
-            error_code=None if status == "success" else "combined_detector_failure",
+            error_code=error_code,
         )
 
 
@@ -151,6 +179,7 @@ class BenchmarkRunner:
         errors = 0
         timeouts = 0
         successes = 0
+        partial_failures = 0
         consistent_comparisons = 0
         total_comparisons = 0
 
@@ -184,6 +213,10 @@ class BenchmarkRunner:
                 )
                 successes += sum(
                     item.status == "success"
+                    for item in outputs
+                )
+                partial_failures += sum(
+                    item.error_code == "partial_detector_failure"
                     for item in outputs
                 )
                 _accumulate_example_metrics(
@@ -234,6 +267,7 @@ class BenchmarkRunner:
             "invalid_candidate_count": invalid_candidates,
             "error_count": errors,
             "timeout_count": timeouts,
+            "partial_failure_count": partial_failures,
         }
 
 

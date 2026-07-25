@@ -21,9 +21,10 @@ def write_markdown_report(
         f"Examples: {result['example_count']}",
         "",
         "| Detector | Strict F1 | Partial F1 | P95 ms | Peak MiB | "
-        "Consistency | Parse rate | Invalid | Errors | Timeouts |",
+        "Consistency | Parse rate | Invalid | Partial failures | Errors | "
+        "Timeouts |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: |",
+        "---: | ---: | ---: |",
     ]
     entity_sections: list[str] = []
     for name, metrics in result["detectors"].items():
@@ -42,6 +43,7 @@ def write_markdown_report(
             f"{metrics['peak_rss_mib']:.2f} | "
             f"{metrics['consistency_rate']:.4f} | "
             f"{parse_text} | {metrics['invalid_candidate_count']} | "
+            f"{metrics.get('partial_failure_count', 0)} | "
             f"{metrics['error_count']} | {metrics['timeout_count']} |"
         )
         entity_sections.extend(
@@ -61,6 +63,23 @@ def write_markdown_report(
                 f"{entity_metrics['f1']:.4f} |"
             )
     lines.extend(entity_sections)
+    environment = result.get("environment")
+    if isinstance(environment, dict):
+        threshold = environment.get("ner_threshold")
+        artifact_sha256 = environment.get(
+            "ner_threshold_artifact_sha256"
+        )
+        if threshold is not None and artifact_sha256 is not None:
+            lines.extend(
+                [
+                    "",
+                    "## Reproducibility",
+                    "",
+                    f"Selected NER threshold: `{threshold}`",
+                    "",
+                    f"Threshold artifact SHA-256: `{artifact_sha256}`",
+                ]
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "\n".join(lines) + "\n",

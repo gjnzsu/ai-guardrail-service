@@ -18,6 +18,9 @@ from ai_guardrail.evaluation.runner import (
     AuthoritativeUnionDetector,
     BenchmarkRunner,
 )
+from ai_guardrail.evaluation.threshold_artifact import (
+    load_selected_threshold,
+)
 from ai_guardrail.io import read_jsonl
 
 
@@ -43,8 +46,8 @@ def parse_args() -> argparse.Namespace:
         required=True,
     )
     parser.add_argument(
-        "--ner-threshold",
-        type=float,
+        "--ner-threshold-artifact",
+        type=Path,
         required=True,
     )
     parser.add_argument("--qwen-url", required=True)
@@ -113,11 +116,15 @@ async def run() -> None:
     args = parse_args()
     examples = read_jsonl(args.challenge)
     _require_challenge_examples(examples)
+    threshold = load_selected_threshold(
+        args.ner_threshold_artifact,
+        args.ner_model,
+    )
 
     regex = RegexDetector.from_yaml(args.regex_config)
     ner = NerDetector.load(
         args.ner_model,
-        args.ner_threshold,
+        threshold.value,
     )
     qwen = QwenDetector(
         base_url=args.qwen_url,
@@ -144,8 +151,13 @@ async def run() -> None:
         "python": platform.python_version(),
         "challenge_sha256": sha256(args.challenge),
         "ner_model_path": args.ner_model.name,
-        "ner_manifest_sha256": sha256(
-            args.ner_model / "training-manifest.json"
+        "ner_manifest_sha256": threshold.manifest_sha256,
+        "ner_threshold": threshold.value,
+        "ner_threshold_artifact_sha256": (
+            threshold.artifact_sha256
+        ),
+        "ner_threshold_validation_sha256": (
+            threshold.validation_sha256
         ),
         "qwen_model": args.qwen_model,
         "qwen_sha256": args.qwen_sha256,

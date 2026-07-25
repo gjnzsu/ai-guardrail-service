@@ -51,6 +51,20 @@ def test_strict_span_metrics_count_type_and_boundary() -> None:
     }
 
 
+def test_strict_span_metrics_count_duplicate_prediction_as_false_positive() -> None:
+    gold = [EntitySpan(type=EntityType.PERSON, start=0, end=11)]
+    predicted = [
+        candidate(EntityType.PERSON, 0, 11, 0.9),
+        candidate(EntityType.PERSON, 0, 11, 0.8),
+    ]
+
+    assert score_spans(gold, predicted) == {
+        "true_positive": 1,
+        "false_positive": 1,
+        "false_negative": 0,
+    }
+
+
 def test_character_metrics_measure_missed_and_extra_characters() -> None:
     gold = [EntitySpan(type=EntityType.PERSON, start=0, end=4)]
     predicted = [candidate(EntityType.PERSON, 0, 3, 0.9)]
@@ -115,6 +129,22 @@ def test_threshold_selection_maximizes_strict_f1() -> None:
 def test_threshold_selection_uses_higher_threshold_as_final_tiebreaker() -> None:
     gold = [[EntitySpan(type=EntityType.PERSON, start=0, end=11)]]
     predicted = [[candidate(EntityType.PERSON, 0, 11, 0.9)]]
+
+    assert select_threshold(gold, predicted, [0.5, 0.7]) == 0.7
+
+
+def test_threshold_selection_penalizes_duplicate_predictions() -> None:
+    gold = [[
+        EntitySpan(type=EntityType.PERSON, start=0, end=4),
+        EntitySpan(type=EntityType.ADDRESS, start=5, end=9),
+    ]]
+    predicted = [[
+        candidate(EntityType.PERSON, 0, 4, 0.55),
+        candidate(EntityType.PERSON, 0, 4, 0.55),
+        candidate(EntityType.PERSON, 0, 4, 0.55),
+        candidate(EntityType.PERSON, 0, 4, 0.55),
+        candidate(EntityType.ADDRESS, 5, 9, 0.75),
+    ]]
 
     assert select_threshold(gold, predicted, [0.5, 0.7]) == 0.7
 

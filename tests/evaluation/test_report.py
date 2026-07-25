@@ -23,6 +23,10 @@ def benchmark_result() -> dict[str, object]:
                 "timeout_count": 0,
             }
         },
+        "environment": {
+            "ner_threshold": 0.8,
+            "ner_threshold_artifact_sha256": "a" * 64,
+        },
     }
 
 
@@ -37,3 +41,5 @@ def test_report_writers_create_aggregate_only_outputs(tmp_path: Path) -> None:
     markdown = markdown_path.read_text(encoding="utf-8")
     assert "# Offline Detector Evaluation" in markdown
     assert "| ner | 1.0000 | 1.0000 |" in markdown
+    assert "Selected NER threshold: `0.8`" in markdown
+    assert f"Threshold artifact SHA-256: `{'a' * 64}`" in markdown

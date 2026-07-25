@@ -10,9 +10,11 @@ from pathlib import Path
 from ai_guardrail.detectors.ner import NerDetector
 from ai_guardrail.domain import LabeledExample
 from ai_guardrail.evaluation.metrics import select_threshold
+from ai_guardrail.evaluation.threshold_artifact import (
+    THRESHOLDS,
+    build_threshold_artifact,
+)
 from ai_guardrail.io import read_jsonl
-
-THRESHOLDS = [value / 100 for value in range(50, 100, 5)]
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,14 +74,14 @@ async def run() -> None:
         raise RuntimeError(
             "NER threshold selection produced an invalid threshold"
         )
-    payload = {
-        "model_version": args.ner_model.name,
-        "validation_sha256": hashlib.sha256(
+    payload = build_threshold_artifact(
+        model_path=args.ner_model,
+        validation_sha256=hashlib.sha256(
             args.validation.read_bytes()
         ).hexdigest(),
-        "candidate_thresholds": THRESHOLDS,
-        "selected_threshold": threshold,
-    }
+        candidate_thresholds=THRESHOLDS,
+        selected_threshold=threshold,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(

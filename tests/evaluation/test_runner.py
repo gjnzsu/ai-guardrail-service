@@ -129,6 +129,51 @@ class FakeEmailNerDetector:
         )
 
 
+class FailedDetector:
+    def __init__(self, status: str) -> None:
+        self.status = status
+
+    async def detect(
+        self,
+        text: str,
+        message_index: int = 0,
+    ) -> DetectorOutput:
+        return DetectorOutput(
+            detector="failed",
+            model_version="failed-v1",
+            status=self.status,
+            latency_ms=2,
+            error_code="private_failure_detail",
+        )
+
+
+class DuplicateVaryingDetector:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def detect(
+        self,
+        text: str,
+        message_index: int = 0,
+    ) -> DetectorOutput:
+        self.calls += 1
+        candidate = CandidateDetection(
+            message_index=message_index,
+            type=EntityType.PERSON,
+            start=0,
+            end=11,
+            source=DetectionSource.NER,
+            confidence=0.9,
+        )
+        return DetectorOutput(
+            detector="ner",
+            model_version="fake-ner",
+            status="success",
+            latency_ms=1,
+            candidates=[candidate] * self.calls,
+        )
+
+
 @pytest.mark.asyncio
 async def test_benchmark_runner_aggregates_metrics_without_storing_text() -> None:
     runner = BenchmarkRunner({"ner": FakeDetector()})
@@ -154,6 +199,51 @@ async def test_authoritative_union_uses_regex_for_deterministic_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authoritative_union_keeps_regex_when_ner_fails() -> None:
+    detector = AuthoritativeUnionDetector(
+        regex=FakeRegexDetector(),
+        ner=FailedDetector("error"),
+    )
+
+    output = await detector.detect("jane@example.test")
+
+    assert output.status == "success"
+    assert output.error_code == "partial_detector_failure"
+    assert len(output.candidates) == 1
+    assert output.candidates[0].source == DetectionSource.REGEX
+
+
+@pytest.mark.asyncio
+async def test_authoritative_union_keeps_ner_when_regex_fails() -> None:
+    detector = AuthoritativeUnionDetector(
+        regex=FailedDetector("timeout"),
+        ner=FakeDetector(),
+    )
+
+    output = await detector.detect("Jane Cooper")
+
+    assert output.status == "success"
+    assert output.error_code == "partial_detector_failure"
+    assert len(output.candidates) == 1
+    assert output.candidates[0].source == DetectionSource.NER
+
+
+@pytest.mark.asyncio
+async def test_authoritative_union_fails_only_when_both_detectors_fail() -> None:
+    detector = AuthoritativeUnionDetector(
+        regex=FailedDetector("error"),
+        ner=FailedDetector("timeout"),
+    )
+
+    output = await detector.detect("Jane Cooper")
+
+    assert output.status == "timeout"
+    assert output.error_code == "combined_detector_failure"
+    assert output.candidates == []
+    assert "private_failure_detail" not in str(output)
+
+
+@pytest.mark.asyncio
 async def test_runner_reports_repeat_consistency() -> None:
     runner = BenchmarkRunner({"ner": FakeDetector()}, repetitions=2)
 
@@ -161,6 +251,34 @@ async def test_runner_reports_repeat_consistency() -> None:
 
     assert result["detectors"]["ner"]["consistency_rate"] == 1.0
     assert result["detectors"]["ner"]["success_rate"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_runner_consistency_counts_duplicate_multiplicity() -> None:
+    runner = BenchmarkRunner(
+        {"ner": DuplicateVaryingDetector()},
+        repetitions=2,
+    )
+
+    result = await runner.run([challenge_example()])
+
+    assert result["detectors"]["ner"]["consistency_rate"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_runner_reports_partial_union_failure_without_details() -> None:
+    detector = AuthoritativeUnionDetector(
+        regex=FakeRegexDetector(),
+        ner=FailedDetector("error"),
+    )
+    runner = BenchmarkRunner({"regex+ner": detector})
+
+    result = await runner.run([challenge_example()])
+
+    metrics = result["detectors"]["regex+ner"]
+    assert metrics["success_rate"] == 1.0
+    assert metrics["partial_failure_count"] == 1
+    assert "private_failure_detail" not in str(result)
 
 
 @pytest.mark.asyncio
