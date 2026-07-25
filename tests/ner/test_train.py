@@ -129,7 +129,7 @@ def test_ner_dataset_aligns_jsonl_spans_to_bio_labels(tmp_path: Path) -> None:
     }
 
 
-def test_artifact_checksums_are_stable_and_exclude_manifest_and_checkpoints(
+def test_artifact_checksums_are_recursive_and_exclude_only_manifest(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "model.safetensors").write_bytes(b"model")
@@ -140,6 +140,9 @@ def test_artifact_checksums_are_stable_and_exclude_manifest_and_checkpoints(
     (checkpoint / "optimizer.pt").write_bytes(b"optimizer")
 
     assert _artifact_checksums(tmp_path) == {
+        "checkpoint-1/optimizer.pt": (
+            "23732d00643137c9b14b11bdb90f47a8e97b4da42cdfc0887912f4ff732c689c"
+        ),
         "model.safetensors": "9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4",
         "tokenizer.json": "5f97e3774c51edd1d63706c2ec3826c564a067794770cdab0f8c4797971cacf9",
     }
@@ -166,7 +169,8 @@ def test_training_dataset_validation_records_hashed_provenance(
         ],
     )
 
-    provenance = validate_training_datasets(train_path, validation_path)
+    validated = validate_training_datasets(train_path, validation_path)
+    provenance = validated.provenance
 
     assert provenance["train"]["sha256"] == manifest_module.sha256_file(train_path)
     assert provenance["validation"]["sha256"] == manifest_module.sha256_file(
@@ -247,6 +251,48 @@ def test_training_dataset_validation_rejects_contaminated_splits(
 
     with pytest.raises(ValueError, match="invalid training dataset provenance"):
         validate_training_datasets(train_path, validation_path)
+
+
+def test_validated_training_snapshot_is_used_after_paths_change(
+    tmp_path: Path,
+) -> None:
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "validation.jsonl"
+    original_train = dataset_example(
+        record_id="train-1",
+        split="train",
+        family="train-family",
+        text="Jane Cooper",
+    )
+    write_jsonl(train_path, [original_train])
+    write_jsonl(
+        validation_path,
+        [
+            dataset_example(
+                record_id="validation-1",
+                split="validation",
+                family="validation-family",
+                text="Validation content",
+            )
+        ],
+    )
+
+    validated = validate_training_datasets(train_path, validation_path)
+    write_jsonl(
+        train_path,
+        [
+            dataset_example(
+                record_id="train-replacement",
+                split="train",
+                family="replacement-family",
+                text="Private replacement text",
+            )
+        ],
+    )
+    dataset = NerDataset(validated.train.records, FakeTrainingTokenizer())
+
+    assert len(dataset) == 1
+    assert validated.train.records == (original_train,)
 
 
 def test_training_rejects_output_tree_containing_input_dataset(

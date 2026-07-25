@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ai_guardrail.io import read_jsonl
+from ai_guardrail.domain import LabeledExample
+from ai_guardrail.io import JsonlSnapshot, read_jsonl_snapshot
 from ai_guardrail.ner.alignment import align_spans_to_bio
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABEL_TO_ID
 from ai_guardrail.ner.manifest import (
     ARTIFACT_NAME,
     BASE_CHECKPOINT,
     GENERATOR_VERSION,
+    artifact_checksums,
     build_dataset_provenance,
     build_manifest,
     sha256_bytes,
-    sha256_file,
     write_manifest,
 )
 
@@ -22,9 +24,18 @@ _MANIFEST_NAME = "training-manifest.json"
 
 
 class NerDataset:
-    def __init__(self, path: Path, tokenizer: Any) -> None:
+    def __init__(
+        self,
+        source: Path | tuple[LabeledExample, ...],
+        tokenizer: Any,
+    ) -> None:
+        examples = (
+            read_jsonl_snapshot(source).records
+            if isinstance(source, Path)
+            else source
+        )
         self.rows: list[dict[str, Any]] = []
-        for example in read_jsonl(path):
+        for example in examples:
             encoded = tokenizer(
                 example.text,
                 return_offsets_mapping=True,
@@ -43,13 +54,12 @@ class NerDataset:
 
 
 def _artifact_checksums(output: Path) -> dict[str, str]:
-    checksums: dict[str, str] = {}
-    for path in sorted(output.iterdir(), key=lambda item: item.name):
-        if path.is_symlink():
-            raise ValueError("artifact directory must not contain symbolic links")
-        if path.is_file() and path.name != _MANIFEST_NAME:
-            checksums[path.name] = sha256_file(path)
-    return checksums
+    try:
+        return artifact_checksums(output)
+    except ValueError:
+        raise ValueError(
+            "artifact directory must contain only regular local files"
+        ) from None
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,44 +95,54 @@ def _load_ml_dependencies() -> tuple[Any, ...]:
     )
 
 
+@dataclass(frozen=True)
+class ValidatedTrainingDatasets:
+    train: JsonlSnapshot
+    validation: JsonlSnapshot
+    provenance: dict[str, Any]
+
+
 def validate_training_datasets(
     train_path: Path,
     validation_path: Path,
-) -> dict[str, Any]:
+) -> ValidatedTrainingDatasets:
     try:
         if train_path.resolve() == validation_path.resolve():
             raise ValueError
-        train_examples = read_jsonl(train_path)
-        validation_examples = read_jsonl(validation_path)
-        train_sha256 = sha256_file(train_path)
-        validation_sha256 = sha256_file(validation_path)
+        train_snapshot = read_jsonl_snapshot(train_path)
+        validation_snapshot = read_jsonl_snapshot(validation_path)
     except (OSError, ValueError):
         raise ValueError("invalid training dataset provenance") from None
     if (
-        not train_examples
-        or not validation_examples
-        or train_sha256 == validation_sha256
-        or any(example.split != "train" for example in train_examples)
-        or any(example.split != "validation" for example in validation_examples)
+        not train_snapshot.records
+        or not validation_snapshot.records
+        or train_snapshot.sha256 == validation_snapshot.sha256
+        or any(example.split != "train" for example in train_snapshot.records)
+        or any(
+            example.split != "validation"
+            for example in validation_snapshot.records
+        )
         or any(
             example.generator_version != GENERATOR_VERSION
-            for example in train_examples + validation_examples
+            for example in train_snapshot.records + validation_snapshot.records
         )
     ):
         raise ValueError("invalid training dataset provenance")
-    train_ids = [example.id for example in train_examples]
-    validation_ids = [example.id for example in validation_examples]
-    train_families = {example.template_family for example in train_examples}
+    train_ids = [example.id for example in train_snapshot.records]
+    validation_ids = [example.id for example in validation_snapshot.records]
+    train_families = {
+        example.template_family for example in train_snapshot.records
+    }
     validation_families = {
-        example.template_family for example in validation_examples
+        example.template_family for example in validation_snapshot.records
     }
     train_content_hashes = {
         sha256_bytes(example.text.encode("utf-8"))
-        for example in train_examples
+        for example in train_snapshot.records
     }
     validation_content_hashes = {
         sha256_bytes(example.text.encode("utf-8"))
-        for example in validation_examples
+        for example in validation_snapshot.records
     }
     if (
         len(set(train_ids)) != len(train_ids)
@@ -132,13 +152,14 @@ def validate_training_datasets(
         or not train_content_hashes.isdisjoint(validation_content_hashes)
     ):
         raise ValueError("invalid training dataset provenance")
-    return {
-        "train": build_dataset_provenance(train_path, train_examples),
-        "validation": build_dataset_provenance(
-            validation_path,
-            validation_examples,
-        ),
-    }
+    return ValidatedTrainingDatasets(
+        train=train_snapshot,
+        validation=validation_snapshot,
+        provenance={
+            "train": build_dataset_provenance(train_snapshot),
+            "validation": build_dataset_provenance(validation_snapshot),
+        },
+    )
 
 
 def main() -> None:
@@ -155,7 +176,7 @@ def main() -> None:
         for dataset_path in (args.train, args.validation)
     ):
         raise ValueError("output directory must not contain an input dataset")
-    dataset_provenance = validate_training_datasets(
+    validated_datasets = validate_training_datasets(
         args.train,
         args.validation,
     )
@@ -185,8 +206,11 @@ def main() -> None:
         id2label=ID_TO_LABEL,
         label2id=LABEL_TO_ID,
     )
-    train_dataset = NerDataset(args.train, tokenizer)
-    validation_dataset = NerDataset(args.validation, tokenizer)
+    train_dataset = NerDataset(validated_datasets.train.records, tokenizer)
+    validation_dataset = NerDataset(
+        validated_datasets.validation.records,
+        tokenizer,
+    )
     training_args = training_arguments_type(
         output_dir=str(args.output),
         learning_rate=2e-5,
@@ -235,7 +259,7 @@ def main() -> None:
             "weight_decay": 0.01,
             "max_length": 512,
         },
-        datasets=dataset_provenance,
+        datasets=validated_datasets.provenance,
     )
     manifest["artifact_checksums"] = _artifact_checksums(args.output)
     write_manifest(args.output / _MANIFEST_NAME, manifest)

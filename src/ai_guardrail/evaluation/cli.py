@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import platform
 from pathlib import Path
 
@@ -21,12 +20,8 @@ from ai_guardrail.evaluation.runner import (
 from ai_guardrail.evaluation.threshold_artifact import (
     load_selected_threshold,
 )
-from ai_guardrail.io import read_jsonl
+from ai_guardrail.io import read_jsonl_snapshot
 from ai_guardrail.ner.manifest import sha256_bytes
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def parse_args() -> argparse.Namespace:
@@ -149,7 +144,8 @@ def _require_challenge_isolation(
 
 async def run() -> None:
     args = parse_args()
-    examples = read_jsonl(args.challenge)
+    challenge_snapshot = read_jsonl_snapshot(args.challenge)
+    examples = list(challenge_snapshot.records)
     _require_challenge_examples(examples)
     threshold = load_selected_threshold(
         args.ner_threshold_artifact,
@@ -164,6 +160,8 @@ async def run() -> None:
     ner = NerDetector.load(
         args.ner_model,
         threshold.value,
+        expected_artifact_sha256=threshold.model_artifact_sha256,
+        expected_manifest_sha256=threshold.manifest_sha256,
     )
     qwen = QwenDetector(
         base_url=args.qwen_url,
@@ -188,7 +186,7 @@ async def run() -> None:
         "host_processor": platform.processor(),
         "platform": platform.platform(),
         "python": platform.python_version(),
-        "challenge_sha256": sha256(args.challenge),
+        "challenge_sha256": challenge_snapshot.sha256,
         "ner_model_path": args.ner_model.name,
         "ner_manifest_sha256": threshold.manifest_sha256,
         "ner_artifact_sha256": threshold.model_artifact_sha256,

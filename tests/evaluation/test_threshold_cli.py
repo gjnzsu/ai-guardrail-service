@@ -15,7 +15,7 @@ from ai_guardrail.domain import (
     LabeledExample,
 )
 from ai_guardrail.evaluation import threshold_cli
-from ai_guardrail.io import write_jsonl
+from ai_guardrail.io import read_jsonl_snapshot, write_jsonl
 from ai_guardrail.ner.labels import LABEL_TO_ID
 from ai_guardrail.ner.manifest import (
     ARTIFACT_NAME,
@@ -42,7 +42,6 @@ def write_manifest(model_path: Path, validation_path: Path) -> tuple[Path, str]:
         for name in ("config.json", "model.safetensors", "tokenizer.json")
     }
     manifest_path = model_path / "training-manifest.json"
-    validation_examples = threshold_cli.read_jsonl(validation_path)
     manifest = {
         "manifest_schema_version": 2,
         "artifact_name": ARTIFACT_NAME,
@@ -61,8 +60,7 @@ def write_manifest(model_path: Path, validation_path: Path) -> tuple[Path, str]:
                 "content_hashes": ["3" * 64],
             },
             "validation": build_dataset_provenance(
-                validation_path,
-                validation_examples,
+                read_jsonl_snapshot(validation_path),
             ),
         },
     }
@@ -138,6 +136,7 @@ async def test_threshold_cli_writes_finite_validation_selected_artifact(
     model_path = tmp_path / "ai-guardrail-ner-en-v1"
     write_jsonl(validation_path, [example("validation")])
     manifest_path, artifact_sha256 = write_manifest(model_path, validation_path)
+    load_calls: list[tuple[Path, float, dict[str, object]]] = []
     monkeypatch.setattr(
         threshold_cli,
         "parse_args",
@@ -150,7 +149,10 @@ async def test_threshold_cli_writes_finite_validation_selected_artifact(
     monkeypatch.setattr(
         threshold_cli.NerDetector,
         "load",
-        lambda _path, threshold: FakeNerDetector(),
+        lambda path, threshold, **kwargs: (
+            load_calls.append((path, threshold, kwargs))
+            or FakeNerDetector()
+        ),
     )
 
     await threshold_cli.run()
@@ -166,12 +168,23 @@ async def test_threshold_cli_writes_finite_validation_selected_artifact(
         "selected_threshold": 0.8,
         "validation_sha256": hashlib.sha256(validation_path.read_bytes()).hexdigest(),
         "validation_provenance": build_dataset_provenance(
-            validation_path,
-            [example("validation")],
+            read_jsonl_snapshot(validation_path),
         ),
     }
     assert "Jane Cooper" not in output_path.read_text(encoding="utf-8")
     assert math.isfinite(payload["selected_threshold"])
+    assert load_calls == [
+        (
+            model_path,
+            0.0,
+            {
+                "expected_artifact_sha256": artifact_sha256,
+                "expected_manifest_sha256": hashlib.sha256(
+                    manifest_path.read_bytes()
+                ).hexdigest(),
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -228,7 +241,7 @@ async def test_threshold_cli_does_not_write_artifact_after_detector_failure(
     monkeypatch.setattr(
         threshold_cli.NerDetector,
         "load",
-        lambda _path, threshold: FailedNerDetector(),
+        lambda _path, threshold, **kwargs: FailedNerDetector(),
     )
 
     with pytest.raises(
@@ -277,4 +290,88 @@ async def test_threshold_cli_rejects_validation_not_bound_to_training_manifest(
         await threshold_cli.run()
 
     assert load_called is False
+    assert not output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_threshold_cli_rejects_output_inside_model_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validation_path = tmp_path / "validation.jsonl"
+    model_path = tmp_path / ARTIFACT_NAME
+    output_path = model_path / "selected-threshold.json"
+    write_jsonl(validation_path, [example("validation")])
+    write_manifest(model_path, validation_path)
+    load_called = False
+
+    def unexpected_load(*args: object, **kwargs: object) -> FakeNerDetector:
+        nonlocal load_called
+        load_called = True
+        return FakeNerDetector()
+
+    monkeypatch.setattr(
+        threshold_cli,
+        "parse_args",
+        lambda: argparse.Namespace(
+            validation=validation_path,
+            ner_model=model_path,
+            output=output_path,
+        ),
+    )
+    monkeypatch.setattr(threshold_cli.NerDetector, "load", unexpected_load)
+
+    with pytest.raises(
+        ValueError,
+        match="outside the NER model artifact",
+    ):
+        await threshold_cli.run()
+
+    assert load_called is False
+    assert not output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_threshold_cli_rejects_model_replacement_after_detector_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validation_path = tmp_path / "validation.jsonl"
+    output_path = tmp_path / "threshold.json"
+    model_path = tmp_path / ARTIFACT_NAME
+    write_jsonl(validation_path, [example("validation")])
+    write_manifest(model_path, validation_path)
+
+    def replace_model(
+        _path: Path,
+        threshold: float,
+        **kwargs: object,
+    ) -> FakeNerDetector:
+        weights_path = model_path / "model.safetensors"
+        weights_path.write_bytes(b"replacement weights")
+        manifest_path = model_path / "training-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifact_checksums"]["model.safetensors"] = sha256_file(
+            weights_path
+        )
+        write_training_manifest(manifest_path, manifest)
+        return FakeNerDetector()
+
+    monkeypatch.setattr(
+        threshold_cli,
+        "parse_args",
+        lambda: argparse.Namespace(
+            validation=validation_path,
+            ner_model=model_path,
+            output=output_path,
+        ),
+    )
+    monkeypatch.setattr(threshold_cli.NerDetector, "load", replace_model)
+
+    with pytest.raises(
+        ValueError,
+        match="model artifact changed during threshold selection",
+    ):
+        await threshold_cli.run()
+
     assert not output_path.exists()

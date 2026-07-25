@@ -13,7 +13,7 @@ from ai_guardrail.evaluation.threshold_artifact import (
     THRESHOLDS,
     build_threshold_artifact,
 )
-from ai_guardrail.io import read_jsonl
+from ai_guardrail.io import read_jsonl_snapshot
 from ai_guardrail.ner.manifest import (
     build_dataset_provenance,
     verify_model_artifact,
@@ -54,11 +54,15 @@ def _require_validation_examples(
 
 async def run() -> None:
     args = parse_args()
-    examples = read_jsonl(args.validation)
+    if args.output.resolve().is_relative_to(args.ner_model.resolve()):
+        raise ValueError(
+            "threshold output must be outside the NER model artifact"
+        )
+    validation_snapshot = read_jsonl_snapshot(args.validation)
+    examples = list(validation_snapshot.records)
     _require_validation_examples(examples)
     validation_provenance = build_dataset_provenance(
-        args.validation,
-        examples,
+        validation_snapshot,
     )
     verified = verify_model_artifact(args.ner_model)
     if (
@@ -69,6 +73,8 @@ async def run() -> None:
     detector = NerDetector.load(
         args.ner_model,
         threshold=0.0,
+        expected_artifact_sha256=verified.artifact_sha256,
+        expected_manifest_sha256=verified.manifest_sha256,
     )
     predictions = []
     for example in examples:
@@ -92,6 +98,8 @@ async def run() -> None:
         validation_provenance=validation_provenance,
         candidate_thresholds=THRESHOLDS,
         selected_threshold=threshold,
+        expected_artifact_sha256=verified.artifact_sha256,
+        expected_manifest_sha256=verified.manifest_sha256,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

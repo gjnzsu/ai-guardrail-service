@@ -15,6 +15,7 @@ from ai_guardrail.ner.manifest import (
     BASE_CHECKPOINT,
     GENERATOR_VERSION,
     sha256_file,
+    verify_model_artifact,
 )
 
 
@@ -366,12 +367,22 @@ def test_ner_detector_loads_local_artifact_on_cpu(
 
     detector = NerDetector.load(model_path, threshold=0.5)
 
-    assert tokenizer_calls == [
-        (model_path, {"use_fast": True, "local_files_only": True})
-    ]
-    assert model_calls == [(model_path, {"local_files_only": True})]
+    tokenizer_path = tokenizer_calls[0][0]
+    model_load_path = model_calls[0][0]
+    assert tokenizer_path == model_load_path
+    assert tokenizer_path != model_path
+    assert tokenizer_path.name == ARTIFACT_NAME
+    assert tokenizer_calls[0][1] == {
+        "use_fast": True,
+        "local_files_only": True,
+    }
+    assert model_calls[0][1] == {"local_files_only": True}
+    assert not tokenizer_path.exists()
     assert model.devices == ["cpu"]
     assert detector.model_version == ARTIFACT_NAME
+    assert detector.artifact_sha256 == verify_model_artifact(
+        model_path
+    ).artifact_sha256
 
 
 def test_ner_detector_rejects_renamed_artifact_before_ml_loading(
@@ -458,3 +469,62 @@ def test_ner_detector_rejects_loaded_model_label_mismatch(
         NerDetector.load(model_path, threshold=0.5)
 
     assert "99" not in str(exc_info.value)
+
+
+def test_ner_detector_snapshot_isolated_from_source_replacement_during_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_path = tmp_path / ARTIFACT_NAME
+    model_path.mkdir()
+    write_valid_manifest(model_path)
+    expected_digest = verify_model_artifact(model_path).artifact_sha256
+    seen_weights: list[bytes] = []
+
+    def load_tokenizer(path: Path, **kwargs: object) -> FakeTokenizer:
+        seen_weights.append((path / "model.safetensors").read_bytes())
+        (model_path / "model.safetensors").write_bytes(b"private replacement")
+        return FakeTokenizer()
+
+    def load_model(path: Path, **kwargs: object) -> LoadableFakeModel:
+        seen_weights.append((path / "model.safetensors").read_bytes())
+        return LoadableFakeModel()
+
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", load_tokenizer)
+    monkeypatch.setattr(AutoModelForTokenClassification, "from_pretrained", load_model)
+
+    detector = NerDetector.load(
+        model_path,
+        threshold=0.5,
+        expected_artifact_sha256=expected_digest,
+    )
+
+    assert seen_weights == [b"weights", b"weights"]
+    assert detector.artifact_sha256 == expected_digest
+
+
+def test_ner_detector_rejects_snapshot_mutation_during_transformers_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_path = tmp_path / ARTIFACT_NAME
+    model_path.mkdir()
+    write_valid_manifest(model_path)
+    snapshot_paths: list[Path] = []
+
+    def load_tokenizer(path: Path, **kwargs: object) -> FakeTokenizer:
+        snapshot_paths.append(path)
+        return FakeTokenizer()
+
+    def load_model(path: Path, **kwargs: object) -> LoadableFakeModel:
+        (path / "model.safetensors").write_bytes(b"snapshot tamper")
+        return LoadableFakeModel()
+
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", load_tokenizer)
+    monkeypatch.setattr(AutoModelForTokenClassification, "from_pretrained", load_model)
+
+    with pytest.raises(ValueError, match="invalid NER model artifact"):
+        NerDetector.load(model_path, threshold=0.5)
+
+    assert snapshot_paths
+    assert not snapshot_paths[0].exists()

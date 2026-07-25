@@ -3,11 +3,15 @@ import importlib.metadata
 import json
 import math
 import platform
+import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ai_guardrail.domain import LabeledExample
+from ai_guardrail.io import JsonlSnapshot
 from ai_guardrail.ner.labels import LABEL_TO_ID
 
 ARTIFACT_NAME = "ai-guardrail-ner-en-v1"
@@ -24,6 +28,12 @@ class VerifiedModelArtifact:
     manifest: dict[str, Any]
     manifest_sha256: str
     artifact_sha256: str
+
+
+@dataclass(frozen=True)
+class VerifiedModelSnapshot:
+    path: Path
+    verified: VerifiedModelArtifact
 
 
 def is_exact_label_mapping(label_mapping: object) -> bool:
@@ -50,23 +60,44 @@ def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def artifact_checksums(root: Path) -> dict[str, str]:
+    checksums: dict[str, str] = {}
+    pending = [root]
+    try:
+        while pending:
+            directory = pending.pop()
+            for path in directory.iterdir():
+                if path.is_symlink():
+                    raise ValueError(_ARTIFACT_ERROR)
+                if path.is_dir():
+                    pending.append(path)
+                elif path.is_file():
+                    relative_name = path.relative_to(root).as_posix()
+                    if relative_name != MANIFEST_FILENAME:
+                        checksums[relative_name] = sha256_file(path)
+                else:
+                    raise ValueError(_ARTIFACT_ERROR)
+    except OSError:
+        raise ValueError(_ARTIFACT_ERROR) from None
+    return dict(sorted(checksums.items()))
+
+
 def build_dataset_provenance(
-    path: Path,
-    examples: list[LabeledExample],
+    snapshot: JsonlSnapshot,
 ) -> dict[str, Any]:
     return {
-        "sha256": sha256_file(path),
-        "record_count": len(examples),
+        "sha256": snapshot.sha256,
+        "record_count": len(snapshot.records),
         "record_id_hashes": sorted(
             sha256_bytes(example.id.encode("utf-8"))
-            for example in examples
+            for example in snapshot.records
         ),
         "template_families": sorted(
-            {example.template_family for example in examples}
+            {example.template_family for example in snapshot.records}
         ),
         "content_hashes": sorted(
             sha256_bytes(example.text.encode("utf-8"))
-            for example in examples
+            for example in snapshot.records
         ),
     }
 
@@ -168,30 +199,22 @@ def verify_model_artifact(model_path: Path) -> VerifiedModelArtifact:
         or "config.json" not in checksums
     ):
         raise ValueError(_ARTIFACT_ERROR)
-    actual_artifact_names: set[str] = set()
-    try:
-        for artifact_path in model_path.iterdir():
-            if artifact_path.is_symlink():
-                raise ValueError(_ARTIFACT_ERROR)
-            if artifact_path.is_file() and artifact_path.name != MANIFEST_FILENAME:
-                actual_artifact_names.add(artifact_path.name)
-            elif not artifact_path.is_dir() and artifact_path.name != MANIFEST_FILENAME:
-                raise ValueError(_ARTIFACT_ERROR)
-    except OSError:
-        raise ValueError(_ARTIFACT_ERROR) from None
-    if set(checksums) != actual_artifact_names:
+    actual_checksums = artifact_checksums(model_path)
+    if set(checksums) != set(actual_checksums):
         raise ValueError(_ARTIFACT_ERROR)
     for name, expected_sha256 in checksums.items():
+        relative = PurePosixPath(name) if isinstance(name, str) else None
         if (
             not isinstance(name, str)
             or not name
-            or Path(name).name != name
+            or relative is None
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or "\\" in name
             or not _is_sha256(expected_sha256)
         ):
             raise ValueError(_ARTIFACT_ERROR)
-        artifact_path = model_path / name
-        content = _read_regular_file(artifact_path)
-        if sha256_bytes(content) != expected_sha256:
+        if actual_checksums[name] != expected_sha256:
             raise ValueError(_ARTIFACT_ERROR)
     config = _decode_json_object(_read_regular_file(model_path / "config.json"))
     _validate_config_labels(config)
@@ -205,6 +228,63 @@ def verify_model_artifact(model_path: Path) -> VerifiedModelArtifact:
         manifest_sha256=sha256_bytes(manifest_content),
         artifact_sha256=sha256_bytes(canonical_checksums),
     )
+
+
+@contextmanager
+def verified_model_snapshot(
+    source_path: Path,
+    *,
+    expected_artifact_sha256: str | None = None,
+    expected_manifest_sha256: str | None = None,
+) -> Iterator[VerifiedModelSnapshot]:
+    source = verify_model_artifact(source_path)
+    if (
+        expected_artifact_sha256 is not None
+        and source.artifact_sha256 != expected_artifact_sha256
+    ) or (
+        expected_manifest_sha256 is not None
+        and source.manifest_sha256 != expected_manifest_sha256
+    ):
+        raise ValueError(_ARTIFACT_ERROR)
+    with tempfile.TemporaryDirectory(
+        prefix="ai-guardrail-verified-",
+    ) as temporary_directory:
+        snapshot_path = Path(temporary_directory) / ARTIFACT_NAME
+        snapshot_path.mkdir()
+        try:
+            shutil.copyfile(
+                source_path / MANIFEST_FILENAME,
+                snapshot_path / MANIFEST_FILENAME,
+            )
+            for name in source.manifest["artifact_checksums"]:
+                relative = PurePosixPath(name)
+                destination = snapshot_path.joinpath(*relative.parts)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(
+                    source_path.joinpath(*relative.parts),
+                    destination,
+                )
+        except OSError:
+            raise ValueError(_ARTIFACT_ERROR) from None
+        copied = verify_model_artifact(snapshot_path)
+        if (
+            copied.artifact_sha256 != source.artifact_sha256
+            or copied.manifest_sha256 != source.manifest_sha256
+        ):
+            raise ValueError(_ARTIFACT_ERROR)
+        snapshot = VerifiedModelSnapshot(
+            path=snapshot_path,
+            verified=copied,
+        )
+        try:
+            yield snapshot
+        finally:
+            final = verify_model_artifact(snapshot_path)
+            if (
+                final.artifact_sha256 != copied.artifact_sha256
+                or final.manifest_sha256 != copied.manifest_sha256
+            ):
+                raise ValueError(_ARTIFACT_ERROR)
 
 
 def build_manifest(

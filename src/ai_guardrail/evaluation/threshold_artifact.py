@@ -50,8 +50,17 @@ def build_threshold_artifact(
     validation_provenance: dict[str, Any],
     candidate_thresholds: list[float],
     selected_threshold: float,
+    expected_artifact_sha256: str,
+    expected_manifest_sha256: str,
 ) -> dict[str, Any]:
     verified = verify_model_artifact(model_path)
+    if (
+        verified.artifact_sha256 != expected_artifact_sha256
+        or verified.manifest_sha256 != expected_manifest_sha256
+    ):
+        raise ValueError(
+            "model artifact changed during threshold selection"
+        )
     expected_validation = verified.manifest["datasets"]["validation"]
     if validation_provenance != expected_validation:
         raise ValueError("invalid threshold selection provenance")

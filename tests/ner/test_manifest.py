@@ -148,6 +148,65 @@ def test_verify_model_artifact_rejects_unchecked_top_level_file(
     assert "unchecked-tokenizer-private.json" not in str(exc_info.value)
 
 
+def test_verify_model_artifact_rejects_unchecked_nested_file(
+    tmp_path: Path,
+) -> None:
+    model_path, _ = write_verified_artifact(tmp_path)
+    checkpoint = model_path / "checkpoint-1"
+    checkpoint.mkdir()
+    (checkpoint / "private.bin").write_bytes(b"unchecked")
+
+    with pytest.raises(ValueError, match="invalid NER model artifact") as exc_info:
+        verify_model_artifact(model_path)
+
+    assert "private.bin" not in str(exc_info.value)
+
+
+def test_verify_model_artifact_accepts_registered_nested_file(
+    tmp_path: Path,
+) -> None:
+    model_path, _ = write_verified_artifact(tmp_path)
+    checkpoint = model_path / "checkpoint-1"
+    checkpoint.mkdir()
+    nested = checkpoint / "trainer_state.json"
+    nested.write_bytes(b"state")
+    manifest_path = model_path / "training-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_checksums"]["checkpoint-1/trainer_state.json"] = (
+        sha256_file(nested)
+    )
+    write_manifest(manifest_path, manifest)
+
+    verified = verify_model_artifact(model_path)
+
+    assert verified.artifact_sha256
+
+
+def test_verify_model_artifact_rejects_nested_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_path, _ = write_verified_artifact(tmp_path)
+    checkpoint = model_path / "checkpoint-1"
+    checkpoint.mkdir()
+    target = tmp_path / "private.bin"
+    target.write_bytes(b"private")
+    nested = checkpoint / "optimizer.pt"
+    try:
+        nested.symlink_to(target)
+    except OSError:
+        original = Path.is_symlink
+        nested.write_bytes(b"private")
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == nested or original(path),
+        )
+
+    with pytest.raises(ValueError, match="invalid NER model artifact"):
+        verify_model_artifact(model_path)
+
+
 def test_verify_model_artifact_reports_unsupported_manifest_schema(
     tmp_path: Path,
 ) -> None:

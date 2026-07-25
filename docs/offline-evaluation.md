@@ -71,15 +71,16 @@ $llamaServer = 'C:\approved-tools\llama-server.exe'
 python -m ai_guardrail.evaluation.threshold_cli `
   --validation datasets/generated/v1/validation.jsonl `
   --ner-model artifacts/ai-guardrail-ner-en-v1 `
-  --output artifacts/ai-guardrail-ner-en-v1/selected-threshold.json
+  --output artifacts/thresholds/ai-guardrail-ner-en-v1.selected-threshold.json
 ```
 
-The challenge set is not used for threshold selection.
+The threshold artifact must remain outside the immutable model artifact
+directory. The challenge set is not used for threshold selection.
 
 ## 7. Evaluate
 
 ```powershell
-$thresholdArtifact = 'artifacts/ai-guardrail-ner-en-v1/selected-threshold.json'
+$thresholdArtifact = 'artifacts/thresholds/ai-guardrail-ner-en-v1.selected-threshold.json'
 $challengePath = 'datasets/generated/v1/challenge.reviewed.jsonl'
 $recordedChallengeSha256 = (Get-Content "$challengePath.sha256").Trim().ToLowerInvariant()
 $actualChallengeSha256 = (Get-FileHash -Algorithm SHA256 $challengePath).Hash.ToLowerInvariant()

@@ -193,7 +193,7 @@ async def test_benchmark_cli_uses_validated_threshold_artifact(
     challenge_path = tmp_path / "challenge.jsonl"
     write_jsonl(challenge_path, [challenge_example()])
     model_path, threshold_path = write_model_and_threshold_artifact(tmp_path)
-    loaded_thresholds: list[float] = []
+    loaded_thresholds: list[tuple[float, dict[str, object]]] = []
     written_results: list[dict[str, Any]] = []
 
     class FakeRunner:
@@ -224,8 +224,8 @@ async def test_benchmark_cli_uses_validated_threshold_artifact(
     monkeypatch.setattr(
         cli.NerDetector,
         "load",
-        lambda _path, threshold: (
-            loaded_thresholds.append(threshold) or object()
+        lambda _path, threshold, **kwargs: (
+            loaded_thresholds.append((threshold, kwargs)) or object()
         ),
     )
     monkeypatch.setattr(
@@ -252,13 +252,25 @@ async def test_benchmark_cli_uses_validated_threshold_artifact(
 
     await cli.run()
 
-    assert loaded_thresholds == [0.8]
+    threshold_payload = json.loads(threshold_path.read_text(encoding="utf-8"))
+    assert loaded_thresholds == [
+        (
+            0.8,
+            {
+                "expected_artifact_sha256": threshold_payload[
+                    "ner_artifact_sha256"
+                ],
+                "expected_manifest_sha256": threshold_payload[
+                    "ner_manifest_sha256"
+                ],
+            },
+        )
+    ]
     environment = written_results[0]["environment"]
     assert environment["ner_threshold"] == 0.8
     assert environment["ner_threshold_artifact_sha256"] == hashlib.sha256(
         threshold_path.read_bytes()
     ).hexdigest()
-    threshold_payload = json.loads(threshold_path.read_text(encoding="utf-8"))
     assert environment["ner_artifact_sha256"] == threshold_payload[
         "ner_artifact_sha256"
     ]
@@ -404,3 +416,82 @@ async def test_benchmark_cli_rejects_duplicate_challenge_ids(
         await cli.run()
 
     assert detector_loaded is False
+
+
+@pytest.mark.asyncio
+async def test_benchmark_uses_one_challenge_snapshot_when_path_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    challenge_path = tmp_path / "challenge.jsonl"
+    original = challenge_example()
+    write_jsonl(challenge_path, [original])
+    original_bytes = challenge_path.read_bytes()
+    model_path, threshold_path = write_model_and_threshold_artifact(tmp_path)
+    seen_examples: list[LabeledExample] = []
+    written_results: list[dict[str, Any]] = []
+
+    class FakeRunner:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def run(
+            self,
+            examples: list[LabeledExample],
+        ) -> dict[str, Any]:
+            seen_examples.extend(examples)
+            return {"example_count": len(examples), "detectors": {}}
+
+    def replace_challenge(_path: Path) -> object:
+        write_jsonl(
+            challenge_path,
+            [
+                LabeledExample(
+                    id="replacement-1",
+                    language="en",
+                    text="Private replacement challenge",
+                    entities=[],
+                    template_family="replacement-challenge",
+                    generator_version="v1",
+                    split="challenge",
+                )
+            ],
+        )
+        return object()
+
+    monkeypatch.setattr(
+        cli,
+        "parse_args",
+        lambda: benchmark_args(
+            tmp_path,
+            challenge_path,
+            model_path,
+            threshold_path,
+        ),
+    )
+    monkeypatch.setattr(cli.RegexDetector, "from_yaml", replace_challenge)
+    monkeypatch.setattr(
+        cli.NerDetector,
+        "load",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(cli, "QwenDetector", lambda **kwargs: object())
+    monkeypatch.setattr(
+        cli,
+        "AuthoritativeUnionDetector",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(cli, "BenchmarkRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli,
+        "write_json_report",
+        lambda _path, result: written_results.append(result),
+    )
+    monkeypatch.setattr(cli, "write_markdown_report", lambda *_args: None)
+
+    await cli.run()
+
+    assert seen_examples == [original]
+    assert written_results[0]["environment"]["challenge_sha256"] == (
+        hashlib.sha256(original_bytes).hexdigest()
+    )

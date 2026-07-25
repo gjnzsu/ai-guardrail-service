@@ -12,7 +12,7 @@ from ai_guardrail.ner.labels import ID_TO_LABEL, LABELS
 from ai_guardrail.ner.manifest import (
     ARTIFACT_NAME,
     is_exact_label_mapping,
-    verify_model_artifact,
+    verified_model_snapshot,
 )
 
 
@@ -24,6 +24,8 @@ class NerDetector:
         model: Any,
         model_version: str,
         threshold: float,
+        artifact_sha256: str | None = None,
+        manifest_sha256: str | None = None,
     ) -> None:
         if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
             raise ValueError("threshold must be between 0 and 1")
@@ -31,32 +33,46 @@ class NerDetector:
         self.model = model.eval()
         self.model_version = model_version
         self.threshold = threshold
+        self.artifact_sha256 = artifact_sha256
+        self.manifest_sha256 = manifest_sha256
 
     @classmethod
-    def load(cls, model_path: Path, threshold: float) -> NerDetector:
-        verify_model_artifact(model_path)
-
+    def load(
+        cls,
+        model_path: Path,
+        threshold: float,
+        *,
+        expected_artifact_sha256: str | None = None,
+        expected_manifest_sha256: str | None = None,
+    ) -> NerDetector:
         from transformers import AutoModelForTokenClassification, AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(
+        with verified_model_snapshot(
             model_path,
-            use_fast=True,
-            local_files_only=True,
-        )
-        model = AutoModelForTokenClassification.from_pretrained(
-            model_path,
-            local_files_only=True,
-        ).to("cpu")
-        if (
-            not is_exact_label_mapping(getattr(model.config, "label2id", None))
-            or getattr(model.config, "id2label", None) != ID_TO_LABEL
-        ):
-            raise ValueError("invalid NER model artifact")
+            expected_artifact_sha256=expected_artifact_sha256,
+            expected_manifest_sha256=expected_manifest_sha256,
+        ) as snapshot:
+            tokenizer = AutoTokenizer.from_pretrained(
+                snapshot.path,
+                use_fast=True,
+                local_files_only=True,
+            )
+            model = AutoModelForTokenClassification.from_pretrained(
+                snapshot.path,
+                local_files_only=True,
+            ).to("cpu")
+            if (
+                not is_exact_label_mapping(getattr(model.config, "label2id", None))
+                or getattr(model.config, "id2label", None) != ID_TO_LABEL
+            ):
+                raise ValueError("invalid NER model artifact")
         return cls(
             tokenizer=tokenizer,
             model=model,
             model_version=ARTIFACT_NAME,
             threshold=threshold,
+            artifact_sha256=snapshot.verified.artifact_sha256,
+            manifest_sha256=snapshot.verified.manifest_sha256,
         )
 
     def _detect_sync(self, text: str, message_index: int) -> DetectorOutput:
