@@ -30,13 +30,20 @@
 
 ## Plan Boundary
 
-This is Plan 1 of 3:
+This is Plan 1 of 4:
 
 1. **This plan:** offline data, detectors, training, and comparative evaluation.
 2. **Later plan:** local Guardrail HTTP service, validation/merge/mask pipeline, health, readiness, and Docker Compose.
 3. **Later plan:** non-blocking `ai-gateway-service` shadow integration.
+4. **Later plan:** Docker Desktop verification and Cloud Build deployment to
+   the existing GKE cluster and `ai-gateway` namespace.
 
 Do not add FastAPI, Kubernetes, Gateway changes, production enforcement, GLiNER, multilingual support, or Qwen fine-tuning while executing this plan.
+
+The checkbox state in this file is the sole Phase 1 progress source. The first
+reviewable milestone ends after Task 3, when a committed synthetic fixture runs
+through the real regex detector and produces a privacy-safe aggregate report.
+Do not begin NER work until that vertical slice passes.
 
 ## File Map
 
@@ -66,6 +73,7 @@ ai-guardrail-service/
 │   │   └── manifest.py                    # Reproducibility metadata and checksums
 │   └── evaluation/
 │       ├── __init__.py
+│       ├── smoke.py                       # Early regex vertical-slice report
 │       ├── metrics.py                     # Span, character, latency metrics
 │       ├── threshold_cli.py               # Validation threshold selection
 │       ├── runner.py                      # Comparable detector benchmark
@@ -91,6 +99,7 @@ ai-guardrail-service/
 │   │   ├── test_alignment.py
 │   │   └── test_manifest.py
 │   └── evaluation/
+│       ├── test_smoke.py
 │       ├── test_metrics.py
 │       └── test_runner.py
 └── docs/
@@ -909,12 +918,16 @@ git commit -m "feat: generate deterministic synthetic entity data"
 **Files:**
 - Create: `config/regex-patterns.yaml`
 - Create: `src/ai_guardrail/detectors/regex.py`
+- Create: `src/ai_guardrail/evaluation/__init__.py`
+- Create: `src/ai_guardrail/evaluation/smoke.py`
 - Create: `tests/detectors/test_regex.py`
+- Create: `tests/evaluation/test_smoke.py`
 
 **Interfaces:**
 - Consumes: `CandidateDetection`, `DetectionSource`, `DetectorOutput`, `EntityType`.
 - Produces: `RegexDetector.from_yaml(path: Path) -> RegexDetector`.
 - Produces: `await RegexDetector.detect(text, message_index=0) -> DetectorOutput`.
+- Produces: `await run_regex_smoke(fixture_path, regex_config, output_path) -> dict[str, int]`.
 
 - [ ] **Step 1: Write failing regex detector tests**
 
@@ -1076,12 +1089,192 @@ python -m ruff check src/ai_guardrail/detectors/regex.py tests/detectors/test_re
 
 Expected: `2 passed`; Ruff exits `0`.
 
-- [ ] **Step 6: Commit regex baseline**
+- [ ] **Step 6: Write the failing vertical-slice test**
+
+Create `tests/evaluation/test_smoke.py`:
+
+```python
+import json
+from pathlib import Path
+
+import pytest
+
+from ai_guardrail.evaluation.smoke import run_regex_smoke
+
+
+@pytest.mark.asyncio
+async def test_regex_smoke_produces_aggregate_only_report(tmp_path: Path) -> None:
+    output_path = tmp_path / "regex-smoke.json"
+
+    summary = await run_regex_smoke(
+        fixture_path=Path("datasets/challenge/en-v1.seed.jsonl"),
+        regex_config=Path("config/regex-patterns.yaml"),
+        output_path=output_path,
+    )
+
+    assert summary == {
+        "examples": 4,
+        "gold_spans": 2,
+        "predicted_spans": 2,
+        "true_positive": 2,
+        "false_positive": 0,
+        "false_negative": 0,
+    }
+    report_text = output_path.read_text(encoding="utf-8")
+    assert json.loads(report_text) == summary
+    assert "Jane Cooper" not in report_text
+    assert "jane.cooper@example.test" not in report_text
+    assert "sk-test-A1B2C3D4E5F6G7H8" not in report_text
+```
+
+- [ ] **Step 7: Run the vertical-slice test and verify RED**
+
+Run:
 
 ```powershell
-git add config/regex-patterns.yaml src/ai_guardrail/detectors/regex.py tests/detectors/test_regex.py
-git commit -m "feat: add deterministic regex detector"
+python -m pytest tests/evaluation/test_smoke.py -v
 ```
+
+Expected: collection fails because `ai_guardrail.evaluation.smoke` does not
+exist.
+
+- [ ] **Step 8: Implement the aggregate-only regex smoke runner**
+
+Create an empty `src/ai_guardrail/evaluation/__init__.py`.
+
+Create `src/ai_guardrail/evaluation/smoke.py`:
+
+```python
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from pathlib import Path
+
+from ai_guardrail.detectors.regex import RegexDetector
+from ai_guardrail.domain import EntityType
+from ai_guardrail.io import read_jsonl
+
+AUTHORITATIVE_REGEX_TYPES = frozenset(
+    {EntityType.EMAIL, EntityType.API_KEY, EntityType.CUSTOMER_ID}
+)
+
+
+async def run_regex_smoke(
+    *,
+    fixture_path: Path,
+    regex_config: Path,
+    output_path: Path,
+) -> dict[str, int]:
+    examples = read_jsonl(fixture_path)
+    detector = RegexDetector.from_yaml(regex_config)
+    gold_spans: set[tuple[str, EntityType, int, int]] = set()
+    predicted_spans: set[tuple[str, EntityType, int, int]] = set()
+
+    for example in examples:
+        gold_spans.update(
+            (example.id, entity.type, entity.start, entity.end)
+            for entity in example.entities
+            if entity.type in AUTHORITATIVE_REGEX_TYPES
+        )
+        result = await detector.detect(example.text)
+        predicted_spans.update(
+            (example.id, candidate.type, candidate.start, candidate.end)
+            for candidate in result.candidates
+            if candidate.type in AUTHORITATIVE_REGEX_TYPES
+        )
+
+    summary = {
+        "examples": len(examples),
+        "gold_spans": len(gold_spans),
+        "predicted_spans": len(predicted_spans),
+        "true_positive": len(gold_spans & predicted_spans),
+        "false_positive": len(predicted_spans - gold_spans),
+        "false_negative": len(gold_spans - predicted_spans),
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fixture", type=Path, required=True)
+    parser.add_argument("--regex-config", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    summary = asyncio.run(
+        run_regex_smoke(
+            fixture_path=args.fixture,
+            regex_config=args.regex_config,
+            output_path=args.output,
+        )
+    )
+    print(json.dumps(summary, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 9: Run the vertical slice and inspect only aggregate output**
+
+Run:
+
+```powershell
+python -m pytest tests/evaluation/test_smoke.py -v
+python -m ai_guardrail.evaluation.smoke `
+  --fixture datasets/challenge/en-v1.seed.jsonl `
+  --regex-config config/regex-patterns.yaml `
+  --output evaluation/reports/regex-smoke.json
+Get-Content evaluation/reports/regex-smoke.json
+```
+
+Expected:
+
+```text
+1 passed
+{"examples": 4, "false_negative": 0, "false_positive": 0, "gold_spans": 2, "predicted_spans": 2, "true_positive": 2}
+{
+  "examples": 4,
+  "false_negative": 0,
+  "false_positive": 0,
+  "gold_spans": 2,
+  "predicted_spans": 2,
+  "true_positive": 2
+}
+```
+
+No fixture text or entity value appears in the report.
+
+- [ ] **Step 10: Run the Task 3 verification gate**
+
+Run:
+
+```powershell
+python -m pytest tests/test_domain.py tests/test_io.py tests/synthetic tests/detectors/test_regex.py tests/evaluation/test_smoke.py -v
+python -m ruff check src tests
+git check-ignore evaluation/reports/regex-smoke.json
+```
+
+Expected: all selected tests pass, Ruff exits `0`, and Git prints
+`evaluation/reports/regex-smoke.json`.
+
+- [ ] **Step 11: Commit the first vertical slice**
+
+```powershell
+git add config/regex-patterns.yaml src/ai_guardrail/detectors/regex.py src/ai_guardrail/evaluation tests/detectors/test_regex.py tests/evaluation/test_smoke.py
+git commit -m "feat: add regex evaluation vertical slice"
+```
+
+At this checkpoint, review the synthetic-to-detector-to-report journey before
+starting model work. If the report contains source text, spans are invalid, or
+the fixture cannot run deterministically, fix that P0 issue within Task 3.
+Defer additional report formats, templates, and production hardening.
 
 ### Task 4: BIO Labels and Character-to-Token Alignment
 
@@ -2074,7 +2267,7 @@ git commit -m "feat: add validated Qwen detector adapter"
 ### Task 7: Comparative Metrics, Benchmark Runner, and Reports
 
 **Files:**
-- Create: `src/ai_guardrail/evaluation/__init__.py`
+- Modify: `src/ai_guardrail/evaluation/__init__.py`
 - Create: `src/ai_guardrail/evaluation/metrics.py`
 - Create: `src/ai_guardrail/evaluation/resources.py`
 - Create: `src/ai_guardrail/evaluation/runner.py`
