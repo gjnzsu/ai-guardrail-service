@@ -174,10 +174,9 @@ class QwenDetector:
                         ],
                         "temperature": 0,
                         "max_tokens": 96,
-                        "response_format": {
-                            "type": "json_schema",
-                            "schema": self.schema,
-                        },
+                        "json_schema": self.schema,
+                        "chat_template_kwargs": {"enable_thinking": False},
+                        "reasoning_effort": "none",
                     },
                 )
                 response.raise_for_status()

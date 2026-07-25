@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import math
 import time
 from pathlib import Path
@@ -14,6 +15,24 @@ from ai_guardrail.ner.manifest import (
     is_exact_label_mapping,
     verified_model_snapshot,
 )
+
+
+def _detach_model_storage(model: Any) -> Any:
+    import torch
+
+    if not isinstance(model, torch.nn.Module):
+        return model
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.data = parameter.detach().clone(
+                memory_format=torch.preserve_format
+            )
+        for buffer in model.buffers():
+            buffer.data = buffer.detach().clone(
+                memory_format=torch.preserve_format
+            )
+    gc.collect()
+    return model
 
 
 class NerDetector:
@@ -66,6 +85,7 @@ class NerDetector:
                 or getattr(model.config, "id2label", None) != ID_TO_LABEL
             ):
                 raise ValueError("invalid NER model artifact")
+            model = _detach_model_storage(model)
         return cls(
             tokenizer=tokenizer,
             model=model,

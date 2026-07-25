@@ -288,6 +288,17 @@ class LoadableFakeModel(FakeModel):
         return self
 
 
+class StorageBackedLoadableModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(2))
+        self.register_buffer("running", torch.ones(1))
+        self.config = SimpleNamespace(
+            label2id=LABEL_TO_ID,
+            id2label={value: key for key, value in LABEL_TO_ID.items()},
+        )
+
+
 def write_valid_manifest(model_path: Path, **overrides: object) -> None:
     config = {
         "label2id": LABEL_TO_ID,
@@ -383,6 +394,33 @@ def test_ner_detector_loads_local_artifact_on_cpu(
     assert detector.artifact_sha256 == verify_model_artifact(
         model_path
     ).artifact_sha256
+
+
+def test_ner_detector_detaches_model_storage_before_snapshot_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_path = tmp_path / ARTIFACT_NAME
+    model_path.mkdir()
+    write_valid_manifest(model_path)
+    model = StorageBackedLoadableModel()
+    original_parameter_pointer = model.weight.data_ptr()
+    original_buffer_pointer = model.running.data_ptr()
+    monkeypatch.setattr(
+        AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: FakeTokenizer(),
+    )
+    monkeypatch.setattr(
+        AutoModelForTokenClassification,
+        "from_pretrained",
+        lambda *args, **kwargs: model,
+    )
+
+    detector = NerDetector.load(model_path, threshold=0.5)
+
+    assert detector.model.weight.data_ptr() != original_parameter_pointer
+    assert detector.model.running.data_ptr() != original_buffer_pointer
 
 
 def test_ner_detector_rejects_renamed_artifact_before_ml_loading(

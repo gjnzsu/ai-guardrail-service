@@ -187,8 +187,10 @@ async def test_qwen_accepts_only_validated_source_substrings() -> None:
         assert body["temperature"] == 0
         assert body["max_tokens"] == 96
         assert body["messages"][-1]["content"].endswith("\n/no_think")
-        assert body["response_format"]["type"] == "json_schema"
-        assert body["response_format"]["schema"]["additionalProperties"] is False
+        assert body["json_schema"]["additionalProperties"] is False
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+        assert body["reasoning_effort"] == "none"
+        assert "response_format" not in body
         return httpx.Response(
             200,
             json={
