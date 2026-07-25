@@ -17,7 +17,24 @@ python -c "from pathlib import Path; from ai_guardrail.synthetic.generator impor
 
 Generated data remains under `datasets/generated/` and is not committed.
 
-## 3. Train DistilBERT
+## 3. Review and promote the challenge release
+
+The generator writes `challenge.candidates.jsonl`, not an evaluation release.
+Manually inspect every challenge record and its entity spans, then promote it
+only after that review. Record the release checksum beside the reviewed file:
+
+```powershell
+# After completing the human review of every candidate record:
+Copy-Item datasets/generated/v1/challenge.candidates.jsonl datasets/generated/v1/challenge.reviewed.jsonl
+$challengePath = 'datasets/generated/v1/challenge.reviewed.jsonl'
+$challengeSha256 = (Get-FileHash -Algorithm SHA256 $challengePath).Hash.ToLowerInvariant()
+Set-Content -NoNewline "$challengePath.sha256" $challengeSha256
+```
+
+The reviewed release must remain distinct from training and validation template
+families. Do not run the benchmark with an unreviewed candidates file.
+
+## 4. Train DistilBERT
 
 ```powershell
 python -m ai_guardrail.ner.train `
@@ -29,14 +46,17 @@ python -m ai_guardrail.ner.train `
 
 Training downloads `distilbert/distilbert-base-cased`; standard tests do not.
 
-## 4. Start Qwen separately
+## 5. Start Qwen separately
 
 Provide `Qwen3-0.6B-Q4_K_M.gguf` through the approved artifact channel, then
-start `llama-server` with a 1,024-token context, a 512-token detector input
-limit, and prompt logging disabled:
+obtain an approved `llama-server.exe` binary. In a second terminal, set its
+local path, then run it in the foreground with a 1,024-token context, a
+512-token detector input limit, and prompt logging disabled. Keep one
+`llama-server` instance running:
 
 ```powershell
-.\tools\llama-server.exe `
+$llamaServer = 'C:\approved-tools\llama-server.exe'
+& $llamaServer `
   -m .\models\Qwen3-0.6B-Q4_K_M.gguf `
   -c 1024 `
   --host 127.0.0.1 `
@@ -45,7 +65,7 @@ limit, and prompt logging disabled:
   --log-disable
 ```
 
-## 5. Select the NER threshold
+## 6. Select the NER threshold
 
 ```powershell
 python -m ai_guardrail.evaluation.threshold_cli `
@@ -56,13 +76,20 @@ python -m ai_guardrail.evaluation.threshold_cli `
 
 The challenge set is not used for threshold selection.
 
-## 6. Evaluate
+## 7. Evaluate
 
 ```powershell
 $thresholdArtifact = 'artifacts/ai-guardrail-ner-en-v1/selected-threshold.json'
-$qwenProcess = Get-Process llama-server
+$challengePath = 'datasets/generated/v1/challenge.reviewed.jsonl'
+$recordedChallengeSha256 = (Get-Content "$challengePath.sha256").Trim().ToLowerInvariant()
+$actualChallengeSha256 = (Get-FileHash -Algorithm SHA256 $challengePath).Hash.ToLowerInvariant()
+if ($actualChallengeSha256 -ne $recordedChallengeSha256) { throw 'reviewed challenge checksum mismatch' }
+$qwenPids = @(Get-NetTCPConnection -State Listen -LocalPort 8080 | Select-Object -ExpandProperty OwningProcess -Unique)
+if ($qwenPids.Count -ne 1) { throw 'expected exactly one llama-server listener on port 8080' }
+$qwenPid = [int]$qwenPids[0]
 $qwenHash = (Get-FileHash -Algorithm SHA256 models/Qwen3-0.6B-Q4_K_M.gguf).Hash.ToLowerInvariant()
-$llamaVersion = (& .\tools\llama-server.exe --version | Select-Object -First 1)
+$llamaServer = 'C:\approved-tools\llama-server.exe'
+$llamaVersion = (& $llamaServer --version | Select-Object -First 1)
 
 python -m ai_guardrail.evaluation.cli `
   --challenge datasets/generated/v1/challenge.reviewed.jsonl `
@@ -70,7 +97,7 @@ python -m ai_guardrail.evaluation.cli `
   --ner-model artifacts/ai-guardrail-ner-en-v1 `
   --ner-threshold-artifact $thresholdArtifact `
   --qwen-url http://127.0.0.1:8080 `
-  --qwen-pid $qwenProcess.Id `
+  --qwen-pid $qwenPid `
   --qwen-sha256 $qwenHash `
   --llama-version $llamaVersion `
   --guardrail-cpu-limit 2 `
@@ -83,8 +110,13 @@ python -m ai_guardrail.evaluation.cli `
 
 Store JSON and Markdown reports under `evaluation/reports/`; the directory is
 ignored by Git. Reports contain aggregate metrics only and no example text.
+The CPU and RAM arguments are operator declarations recorded as provenance;
+they do not limit either process. Treat results as acceptance evidence only
+when those limits are independently enforced in an external controlled
+environment, such as configured Docker Desktop/container limits or an
+equivalent runtime mechanism.
 
-## 7. Acceptance review
+## 8. Acceptance review
 
 - Qwen JSON parse rate is at least 99%.
 - No invalid Qwen candidate enters normalized output.

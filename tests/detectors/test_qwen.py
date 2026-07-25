@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import tomllib
 from pathlib import Path
 
@@ -420,14 +421,36 @@ async def test_qwen_rejects_more_than_schema_maximum_entities() -> None:
 async def test_qwen_detector_does_not_log_prompt_or_entity(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    secret_prompt = "Rotate sk-test-NOT-FOR-LOGGING-1234."
+    prompt_marker = "PROMPT-NOT-FOR-LOGGING"
+    entity_marker = "ENTITY-NOT-FOR-LOGGING"
+    raw_output_marker = "RAW-OUTPUT-NOT-FOR-LOGGING"
+    secret_prompt = f"Rotate sk-test-{prompt_marker}-1234 for {entity_marker}."
+    caplog.set_level(logging.DEBUG)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/tokenize":
             return httpx.Response(200, json={"tokens": [1, 2, 3]})
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": '{"entities":[]}'}}]},
+            json={
+                "private_trace": raw_output_marker,
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "entities": [
+                                        {
+                                            "type": "PERSON",
+                                            "text": entity_marker,
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ],
+            },
         )
 
     detector = QwenDetector(
@@ -436,7 +459,10 @@ async def test_qwen_detector_does_not_log_prompt_or_entity(
         timeout_seconds=2,
         transport=httpx.MockTransport(handler),
     )
-    await detector.detect(secret_prompt)
+    output = await detector.detect(secret_prompt)
 
-    assert secret_prompt not in caplog.text
-    assert "NOT-FOR-LOGGING" not in caplog.text
+    assert output.status == "success"
+    assert len(output.candidates) == 1
+    assert prompt_marker not in caplog.text
+    assert entity_marker not in caplog.text
+    assert raw_output_marker not in caplog.text
