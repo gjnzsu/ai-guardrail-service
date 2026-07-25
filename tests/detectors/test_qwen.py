@@ -414,3 +414,29 @@ async def test_qwen_rejects_more_than_schema_maximum_entities() -> None:
 
     assert output.status == "error"
     assert output.error_code == "invalid_detector_response"
+
+
+@pytest.mark.asyncio
+async def test_qwen_detector_does_not_log_prompt_or_entity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret_prompt = "Rotate sk-test-NOT-FOR-LOGGING-1234."
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"entities":[]}'}}]},
+        )
+
+    detector = QwenDetector(
+        base_url="http://qwen.test",
+        model_version="qwen3-0.6b-q4_k_m",
+        timeout_seconds=2,
+        transport=httpx.MockTransport(handler),
+    )
+    await detector.detect(secret_prompt)
+
+    assert secret_prompt not in caplog.text
+    assert "NOT-FOR-LOGGING" not in caplog.text
