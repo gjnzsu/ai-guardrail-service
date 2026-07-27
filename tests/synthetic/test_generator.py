@@ -85,6 +85,25 @@ def test_committed_challenge_seed_fixture_has_expected_spans() -> None:
             (EntityType.EMAIL, "jane.cooper@example.test"),
         ],
         "challenge-seed-000004": [(EntityType.API_KEY, "sk-test-A1B2C3D4E5F6G7H8")],
+        "challenge-seed-000005": [
+            (EntityType.PERSON, "tommy"),
+            (EntityType.CUSTOMER_ID, "123456"),
+        ],
+        "challenge-seed-000006": [
+            (EntityType.INTERNAL_PROJECT, "project Apex"),
+        ],
+        "challenge-seed-000007": [
+            (EntityType.INTERNAL_PROJECT, "Project Apex"),
+            (EntityType.EMAIL, "30156758@example.test"),
+        ],
+        "challenge-seed-000008": [
+            (EntityType.INTERNAL_PROJECT, "Project Apex"),
+            (EntityType.EMAIL, "project.owner@example.test"),
+        ],
+        "challenge-seed-000009": [
+            (EntityType.INTERNAL_PROJECT, "Project APEX"),
+            (EntityType.EMAIL, "project.owner@example.test"),
+        ],
     }
 
     assert {record.id for record in records} == set(expected_spans)

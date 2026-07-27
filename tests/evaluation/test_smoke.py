@@ -17,15 +17,20 @@ async def test_regex_smoke_produces_aggregate_only_report(tmp_path: Path) -> Non
     )
 
     assert summary == {
-        "examples": 4,
-        "gold_spans": 2,
-        "predicted_spans": 2,
-        "true_positive": 2,
+        "examples": 9,
+        "gold_spans": 6,
+        "predicted_spans": 5,
+        "true_positive": 5,
         "false_positive": 0,
-        "false_negative": 0,
+        "false_negative": 1,
     }
     report_text = output_path.read_text(encoding="utf-8")
     assert json.loads(report_text) == summary
     assert "Jane Cooper" not in report_text
     assert "jane.cooper@example.test" not in report_text
     assert "sk-test-A1B2C3D4E5F6G7H8" not in report_text
+    assert "tommy" not in report_text
+    assert "123456" not in report_text
+    assert "Project Apex" not in report_text
+    assert "30156758@example.test" not in report_text
+    assert "project.owner@example.test" not in report_text
