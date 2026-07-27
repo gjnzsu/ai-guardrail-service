@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add two reviewed English-only synthetic records to the committed challenge
+Add five reviewed English-only synthetic records to the committed challenge
 seed. They preserve detector failures observed during local NER and Qwen smoke
 testing without expanding the POC into retraining or model tuning.
 
@@ -18,10 +18,28 @@ testing without expanding the POC into retraining or model tuning.
      `Project` prefix.
    - Do not label the status color or backlog numbers.
    - Use the family `manual-project-status-challenge`.
+3. A request for Project Apex followed by a synthetic numeric-local-part
+   email address.
+   - Label `Project Apex` as `INTERNAL_PROJECT` at `[23, 35)`.
+   - Label `30156758@example.test` as `EMAIL` at `[53, 74)`.
+   - Use the family `manual-project-numeric-email-challenge`.
+4. The same request followed by a synthetic alphabetic-local-part email
+   address.
+   - Label `Project Apex` as `INTERNAL_PROJECT` at `[23, 35)`.
+   - Label `project.owner@example.test` as `EMAIL` at `[53, 79)`.
+   - Use the family `manual-project-email-challenge`.
+5. The same synthetic email request with the project codename in uppercase.
+   - Label `Project APEX` as `INTERNAL_PROJECT` at `[23, 35)`.
+   - Label `project.owner@example.test` as `EMAIL` at `[53, 79)`.
+   - Use the family `manual-uppercase-project-email-challenge`.
+
+The committed records must use only the synthetic `example.test` addresses.
+The possibly real address used during interactive smoke testing must not be
+persisted.
 
 ## Implementation
 
-- Append `challenge-seed-000005` and `challenge-seed-000006` to
+- Append `challenge-seed-000005` through `challenge-seed-000009` to
   `datasets/challenge/en-v1.seed.jsonl`.
 - Extend the existing committed-seed test with the exact entity text and
   types for both records.
