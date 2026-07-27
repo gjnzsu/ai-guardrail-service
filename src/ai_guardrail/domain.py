@@ -42,7 +42,7 @@ class LabeledExample(BaseModel):
     text: str = Field(min_length=1)
     entities: list[EntitySpan]
     template_family: str = Field(min_length=1)
-    generator_version: Literal["v1"]
+    generator_version: Literal["v1", "v2"]
     split: DatasetSplit
 
     @model_validator(mode="after")

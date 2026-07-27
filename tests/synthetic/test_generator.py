@@ -173,7 +173,7 @@ def test_generate_dataset_writes_configured_counts_and_filenames(tmp_path: Path)
 @pytest.mark.parametrize(
     "config",
     [
-        "generator_version: v2\nseed: 7\ncounts:\n  train: 1\n  validation: 1\n  challenge: 1\n",
+        "generator_version: v3\nseed: 7\ncounts:\n  train: 1\n  validation: 1\n  challenge: 1\n",
         "generator_version: v1\nseed: 7\ncounts:\n  train: 1\n  validation: 1\n",
         "generator_version: v1\nseed: 7\ncounts:\n  train: '1'\n  validation: 1\n  challenge: 1\n",
         "generator_version: v1\nseed: 7\ncounts:\n  train: 0\n  validation: 1\n  challenge: 1\n",

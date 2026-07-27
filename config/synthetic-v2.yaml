@@ -1,0 +1,6 @@
+generator_version: v2
+seed: 20260727
+counts:
+  train: 4000
+  validation: 800
+  challenge: 200
