@@ -14,13 +14,56 @@ from typing import Any
 from ai_guardrail.io import JsonlSnapshot
 from ai_guardrail.ner.labels import LABEL_TO_ID
 
-ARTIFACT_NAME = "ai-guardrail-ner-en-v1"
 BASE_CHECKPOINT = "distilbert/distilbert-base-cased"
-GENERATOR_VERSION = "v1"
 MANIFEST_SCHEMA_VERSION = 2
 MANIFEST_FILENAME = "training-manifest.json"
 
 _ARTIFACT_ERROR = "invalid NER model artifact"
+
+
+@dataclass(frozen=True)
+class NerReleaseProfile:
+    version: str
+    artifact_name: str
+    generator_version: str
+    dataset_version: str
+
+
+_RELEASE_PROFILES = {
+    "v1": NerReleaseProfile(
+        version="v1",
+        artifact_name="ai-guardrail-ner-en-v1",
+        generator_version="v1",
+        dataset_version="v1",
+    ),
+    "v2": NerReleaseProfile(
+        version="v2",
+        artifact_name="ai-guardrail-ner-en-v2",
+        generator_version="v2",
+        dataset_version="v2",
+    ),
+}
+
+ARTIFACT_NAME = _RELEASE_PROFILES["v1"].artifact_name
+GENERATOR_VERSION = _RELEASE_PROFILES["v1"].generator_version
+
+
+def get_release_profile(version: str) -> NerReleaseProfile:
+    try:
+        return _RELEASE_PROFILES[version]
+    except (KeyError, TypeError):
+        raise ValueError("unsupported NER release") from None
+
+
+def get_release_profile_for_artifact(artifact_name: str) -> NerReleaseProfile:
+    profiles = [
+        profile
+        for profile in _RELEASE_PROFILES.values()
+        if profile.artifact_name == artifact_name
+    ]
+    if len(profiles) != 1:
+        raise ValueError(_ARTIFACT_ERROR)
+    return profiles[0]
 
 
 @dataclass(frozen=True)
@@ -177,11 +220,11 @@ def _validate_config_labels(config: dict[str, Any]) -> None:
 
 
 def verify_model_artifact(model_path: Path) -> VerifiedModelArtifact:
-    if (
-        model_path.name != ARTIFACT_NAME
-        or model_path.is_symlink()
-        or not model_path.is_dir()
-    ):
+    try:
+        profile = get_release_profile_for_artifact(model_path.name)
+    except ValueError:
+        raise ValueError(_ARTIFACT_ERROR) from None
+    if model_path.is_symlink() or not model_path.is_dir():
         raise ValueError(_ARTIFACT_ERROR)
     manifest_content = _read_regular_file(model_path / MANIFEST_FILENAME)
     manifest = _decode_json_object(manifest_content)
@@ -189,9 +232,10 @@ def verify_model_artifact(model_path: Path) -> VerifiedModelArtifact:
         raise ValueError("unsupported NER training manifest schema")
     checksums = manifest.get("artifact_checksums")
     if (
-        manifest.get("artifact_name") != ARTIFACT_NAME
+        manifest.get("artifact_name") != profile.artifact_name
         or manifest.get("base_checkpoint") != BASE_CHECKPOINT
-        or manifest.get("generator_version") != GENERATOR_VERSION
+        or manifest.get("generator_version") != profile.generator_version
+        or manifest.get("dataset_version") != profile.dataset_version
         or not is_exact_label_mapping(manifest.get("label_mapping"))
         or not _is_dataset_provenance(manifest.get("datasets"))
         or not isinstance(checksums, dict)
@@ -249,7 +293,10 @@ def verified_model_snapshot(
     with tempfile.TemporaryDirectory(
         prefix="ai-guardrail-verified-",
     ) as temporary_directory:
-        snapshot_path = Path(temporary_directory) / ARTIFACT_NAME
+        snapshot_path = (
+            Path(temporary_directory)
+            / source.manifest["artifact_name"]
+        )
         snapshot_path.mkdir()
         try:
             shutil.copyfile(
@@ -299,9 +346,13 @@ def build_manifest(
     metrics: dict[str, float],
     hyperparameters: dict[str, int | float],
     datasets: dict[str, Any] | None = None,
+    release_version: str = "v1",
 ) -> dict[str, Any]:
-    if generator_version != GENERATOR_VERSION:
+    profile = get_release_profile(release_version)
+    if generator_version != profile.generator_version:
         raise ValueError("generator version does not match expected version")
+    if dataset_version != profile.dataset_version:
+        raise ValueError("dataset version does not match expected version")
     if not is_exact_label_mapping(label_mapping):
         raise ValueError("label mapping does not match expected mapping")
     if threshold is not None and (
@@ -310,7 +361,7 @@ def build_manifest(
         raise ValueError("threshold must be between 0 and 1")
     manifest = {
         "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
-        "artifact_name": ARTIFACT_NAME,
+        "artifact_name": profile.artifact_name,
         "base_checkpoint": base_checkpoint,
         "base_revision": base_revision,
         "dataset_version": dataset_version,

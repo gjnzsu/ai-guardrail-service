@@ -15,8 +15,14 @@ from ai_guardrail.ner.manifest import (
 )
 
 
-def write_verified_artifact(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    model_path = tmp_path / ARTIFACT_NAME
+def write_verified_artifact(
+    tmp_path: Path,
+    *,
+    artifact_name: str = ARTIFACT_NAME,
+    dataset_version: str = "v1",
+    generator_version: str = "v1",
+) -> tuple[Path, dict[str, str]]:
+    model_path = tmp_path / artifact_name
     model_path.mkdir()
     config = {
         "label2id": LABEL_TO_ID,
@@ -31,11 +37,11 @@ def write_verified_artifact(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     }
     manifest = {
         "manifest_schema_version": 2,
-        "artifact_name": ARTIFACT_NAME,
+        "artifact_name": artifact_name,
         "base_checkpoint": "distilbert/distilbert-base-cased",
         "base_revision": "immutable",
-        "dataset_version": "v1",
-        "generator_version": "v1",
+        "dataset_version": dataset_version,
+        "generator_version": generator_version,
         "label_mapping": LABEL_TO_ID,
         "artifact_checksums": checksums,
         "datasets": {
@@ -57,6 +63,53 @@ def write_verified_artifact(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     }
     write_manifest(model_path / "training-manifest.json", manifest)
     return model_path, checksums
+
+
+def test_v2_release_profile_is_allowlisted() -> None:
+    profile = manifest_module.get_release_profile("v2")
+
+    assert profile.version == "v2"
+    assert profile.artifact_name == "ai-guardrail-ner-en-v2"
+    assert profile.generator_version == "v2"
+    assert profile.dataset_version == "v2"
+
+
+def test_verify_model_artifact_accepts_complete_v2_profile(
+    tmp_path: Path,
+) -> None:
+    model_path, _ = write_verified_artifact(
+        tmp_path,
+        artifact_name="ai-guardrail-ner-en-v2",
+        dataset_version="v2",
+        generator_version="v2",
+    )
+
+    verified = verify_model_artifact(model_path)
+
+    assert verified.manifest["artifact_name"] == "ai-guardrail-ner-en-v2"
+
+
+@pytest.mark.parametrize(
+    ("dataset_version", "generator_version"),
+    [
+        ("v1", "v2"),
+        ("v2", "v1"),
+    ],
+)
+def test_verify_model_artifact_rejects_mixed_v2_profile(
+    tmp_path: Path,
+    dataset_version: str,
+    generator_version: str,
+) -> None:
+    model_path, _ = write_verified_artifact(
+        tmp_path,
+        artifact_name="ai-guardrail-ner-en-v2",
+        dataset_version=dataset_version,
+        generator_version=generator_version,
+    )
+
+    with pytest.raises(ValueError, match="invalid NER model artifact"):
+        verify_model_artifact(model_path)
 
 
 def test_sha256_file_is_reproducible(tmp_path: Path) -> None:
