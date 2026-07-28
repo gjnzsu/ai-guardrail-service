@@ -392,4 +392,3 @@ git status --short
 
 Expected: all tests and lint pass; model, threshold, generated dataset, and
 evaluation outputs remain ignored; tracked worktree is clean.
-
