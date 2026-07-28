@@ -13,7 +13,6 @@ from ai_guardrail.ner.labels import LABEL_TO_ID
 from ai_guardrail.ner.manifest import (
     ARTIFACT_NAME,
     BASE_CHECKPOINT,
-    GENERATOR_VERSION,
     sha256_file,
     verify_model_artifact,
 )
@@ -299,7 +298,13 @@ class StorageBackedLoadableModel(torch.nn.Module):
         )
 
 
-def write_valid_manifest(model_path: Path, **overrides: object) -> None:
+def write_valid_manifest(
+    model_path: Path,
+    *,
+    artifact_name: str = ARTIFACT_NAME,
+    release_version: str = "v1",
+    **overrides: object,
+) -> None:
     config = {
         "label2id": LABEL_TO_ID,
         "id2label": {str(value): key for key, value in LABEL_TO_ID.items()},
@@ -309,11 +314,11 @@ def write_valid_manifest(model_path: Path, **overrides: object) -> None:
     (model_path / "tokenizer.json").write_bytes(b"tokenizer")
     manifest: dict[str, object] = {
         "manifest_schema_version": 2,
-        "artifact_name": ARTIFACT_NAME,
+        "artifact_name": artifact_name,
         "base_checkpoint": BASE_CHECKPOINT,
         "base_revision": "immutable-revision",
-        "dataset_version": "v1",
-        "generator_version": GENERATOR_VERSION,
+        "dataset_version": release_version,
+        "generator_version": release_version,
         "label_mapping": LABEL_TO_ID,
         "seed": 7,
         "threshold": None,
@@ -353,13 +358,26 @@ def write_valid_manifest(model_path: Path, **overrides: object) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("artifact_name", "release_version"),
+    [
+        (ARTIFACT_NAME, "v1"),
+        ("ai-guardrail-ner-en-v2", "v2"),
+    ],
+)
 def test_ner_detector_loads_local_artifact_on_cpu(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    artifact_name: str,
+    release_version: str,
 ) -> None:
-    model_path = tmp_path / ARTIFACT_NAME
+    model_path = tmp_path / artifact_name
     model_path.mkdir()
-    write_valid_manifest(model_path)
+    write_valid_manifest(
+        model_path,
+        artifact_name=artifact_name,
+        release_version=release_version,
+    )
     tokenizer = FakeTokenizer()
     model = LoadableFakeModel()
     tokenizer_calls: list[tuple[Path, dict[str, object]]] = []
@@ -382,7 +400,7 @@ def test_ner_detector_loads_local_artifact_on_cpu(
     model_load_path = model_calls[0][0]
     assert tokenizer_path == model_load_path
     assert tokenizer_path != model_path
-    assert tokenizer_path.name == ARTIFACT_NAME
+    assert tokenizer_path.name == artifact_name
     assert tokenizer_calls[0][1] == {
         "use_fast": True,
         "local_files_only": True,
@@ -390,7 +408,7 @@ def test_ner_detector_loads_local_artifact_on_cpu(
     assert model_calls[0][1] == {"local_files_only": True}
     assert not tokenizer_path.exists()
     assert model.devices == ["cpu"]
-    assert detector.model_version == ARTIFACT_NAME
+    assert detector.model_version == artifact_name
     assert detector.artifact_sha256 == verify_model_artifact(
         model_path
     ).artifact_sha256

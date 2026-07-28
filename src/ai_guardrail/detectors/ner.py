@@ -11,7 +11,6 @@ from ai_guardrail.domain import DetectionSource, DetectorOutput
 from ai_guardrail.ner.alignment import decode_bio_predictions
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABELS
 from ai_guardrail.ner.manifest import (
-    ARTIFACT_NAME,
     is_exact_label_mapping,
     verified_model_snapshot,
 )
@@ -89,7 +88,7 @@ class NerDetector:
         return cls(
             tokenizer=tokenizer,
             model=model,
-            model_version=ARTIFACT_NAME,
+            model_version=snapshot.verified.manifest["artifact_name"],
             threshold=threshold,
             artifact_sha256=snapshot.verified.artifact_sha256,
             manifest_sha256=snapshot.verified.manifest_sha256,

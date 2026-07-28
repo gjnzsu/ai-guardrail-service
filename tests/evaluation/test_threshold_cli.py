@@ -28,7 +28,12 @@ from ai_guardrail.ner.manifest import (
 )
 
 
-def write_manifest(model_path: Path, validation_path: Path) -> tuple[Path, str]:
+def write_manifest(
+    model_path: Path,
+    validation_path: Path,
+    *,
+    release_version: str = "v1",
+) -> tuple[Path, str]:
     model_path.mkdir()
     config = {
         "label2id": LABEL_TO_ID,
@@ -44,11 +49,11 @@ def write_manifest(model_path: Path, validation_path: Path) -> tuple[Path, str]:
     manifest_path = model_path / "training-manifest.json"
     manifest = {
         "manifest_schema_version": 2,
-        "artifact_name": ARTIFACT_NAME,
+        "artifact_name": model_path.name,
         "base_checkpoint": "distilbert/distilbert-base-cased",
         "base_revision": "immutable",
-        "dataset_version": "v1",
-        "generator_version": "v1",
+        "dataset_version": release_version,
+        "generator_version": release_version,
         "label_mapping": LABEL_TO_ID,
         "artifact_checksums": checksums,
         "datasets": {
@@ -71,14 +76,18 @@ def write_manifest(model_path: Path, validation_path: Path) -> tuple[Path, str]:
     return manifest_path, artifact_sha256
 
 
-def example(split: str) -> LabeledExample:
+def example(
+    split: str,
+    *,
+    generator_version: str = "v1",
+) -> LabeledExample:
     return LabeledExample(
         id=f"{split}-1",
         language="en",
         text="Jane Cooper",
         entities=[EntitySpan(type=EntityType.PERSON, start=0, end=11)],
         template_family=f"person-{split}",
-        generator_version="v1",
+        generator_version=generator_version,
         split=split,
     )
 
@@ -127,15 +136,36 @@ class FailedNerDetector:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("release_version", "artifact_name"),
+    [
+        ("v1", ARTIFACT_NAME),
+        ("v2", "ai-guardrail-ner-en-v2"),
+    ],
+)
 async def test_threshold_cli_writes_finite_validation_selected_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    release_version: str,
+    artifact_name: str,
 ) -> None:
     validation_path = tmp_path / "validation.jsonl"
     output_path = tmp_path / "selected-threshold.json"
-    model_path = tmp_path / "ai-guardrail-ner-en-v1"
-    write_jsonl(validation_path, [example("validation")])
-    manifest_path, artifact_sha256 = write_manifest(model_path, validation_path)
+    model_path = tmp_path / artifact_name
+    write_jsonl(
+        validation_path,
+        [
+            example(
+                "validation",
+                generator_version=release_version,
+            )
+        ],
+    )
+    manifest_path, artifact_sha256 = write_manifest(
+        model_path,
+        validation_path,
+        release_version=release_version,
+    )
     load_calls: list[tuple[Path, float, dict[str, object]]] = []
     monkeypatch.setattr(
         threshold_cli,
@@ -160,7 +190,7 @@ async def test_threshold_cli_writes_finite_validation_selected_artifact(
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload == {
         "candidate_thresholds": threshold_cli.THRESHOLDS,
-        "model_version": "ai-guardrail-ner-en-v1",
+        "model_version": artifact_name,
         "ner_artifact_sha256": artifact_sha256,
         "ner_manifest_sha256": hashlib.sha256(
             manifest_path.read_bytes()

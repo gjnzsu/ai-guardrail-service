@@ -6,11 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ai_guardrail.ner.manifest import (
-    ARTIFACT_NAME,
-    sha256_bytes,
-    verify_model_artifact,
-)
+from ai_guardrail.ner.manifest import sha256_bytes, verify_model_artifact
 
 THRESHOLDS = [value / 100 for value in range(50, 100, 5)]
 
@@ -66,7 +62,7 @@ def build_threshold_artifact(
         raise ValueError("invalid threshold selection provenance")
     return {
         "candidate_thresholds": candidate_thresholds,
-        "model_version": ARTIFACT_NAME,
+        "model_version": verified.manifest["artifact_name"],
         "ner_artifact_sha256": verified.artifact_sha256,
         "ner_manifest_sha256": verified.manifest_sha256,
         "selected_threshold": selected_threshold,
@@ -100,8 +96,12 @@ def load_selected_threshold(
     payload = _decode_json_object(content, error_message)
     candidates = payload.get("candidate_thresholds")
     selected = payload.get("selected_threshold")
+    try:
+        verified = verify_model_artifact(model_path)
+    except ValueError:
+        raise ValueError(error_message) from None
     if (
-        payload.get("model_version") != ARTIFACT_NAME
+        payload.get("model_version") != verified.manifest["artifact_name"]
         or not isinstance(candidates, list)
         or any(not _is_finite_threshold(value) for value in candidates)
         or candidates != THRESHOLDS
@@ -111,10 +111,6 @@ def load_selected_threshold(
         or not _is_sha256(payload.get("ner_manifest_sha256"))
     ):
         raise ValueError(error_message)
-    try:
-        verified = verify_model_artifact(model_path)
-    except ValueError:
-        raise ValueError(error_message) from None
     validation_provenance = payload.get("validation_provenance")
     expected_validation = verified.manifest["datasets"]["validation"]
     if (
