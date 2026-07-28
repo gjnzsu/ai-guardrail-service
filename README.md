@@ -2,8 +2,12 @@
 
 CPU-first sensitive-entity detection for AI prompts.
 
-The first proof of concept compares deterministic regex, a fine-tuned English
-DistilBERT NER model, and Qwen3 0.6B zero-shot extraction through `llama.cpp`.
+The proof of concept compares deterministic regex, fine-tuned English
+DistilBERT NER models, and Qwen3 0.6B zero-shot extraction through
+`llama.cpp`. The NER workflow supports reproducible v1 and v2 dataset releases;
+v2 increases synthetic template and catalog diversity while keeping the
+training seed fixed for a controlled comparison.
+
 The initial Gateway integration is shadow-only.
 
 ## Documentation
@@ -11,6 +15,7 @@ The initial Gateway integration is shadow-only.
 - [Approved design](docs/superpowers/specs/2026-07-24-ai-guardrail-service-design.md)
 - [Phase 1 implementation plan](docs/superpowers/plans/2026-07-25-offline-detector-evaluation.md)
 - [Offline evaluation workflow](docs/offline-evaluation.md)
+- [Dataset policy and generation](datasets/README.md)
 
 ## Development
 
@@ -22,5 +27,67 @@ python -m pytest
 python -m ruff check .
 ```
 
-Model weights, generated datasets, raw prompts, and full reports are not
-committed to Git.
+Standard tests do not download model weights or access the network.
+
+## NER v2 quick start
+
+Generate the deterministic v2 dataset:
+
+```powershell
+python -c "from pathlib import Path; from ai_guardrail.synthetic.generator import generate_dataset; print(generate_dataset(Path('config/synthetic-v2.yaml'), Path('datasets/generated/v2')))"
+```
+
+Train the trusted v2 release on CPU:
+
+```powershell
+python -m ai_guardrail.ner.train `
+  --release-version v2 `
+  --train datasets/generated/v2/train.jsonl `
+  --validation datasets/generated/v2/validation.jsonl `
+  --output artifacts/ai-guardrail-ner-en-v2 `
+  --seed 20260725
+```
+
+Select the decision threshold using only the v2 validation split:
+
+```powershell
+python -m ai_guardrail.evaluation.threshold_cli `
+  --validation datasets/generated/v2/validation.jsonl `
+  --ner-model artifacts/ai-guardrail-ner-en-v2 `
+  --output artifacts/thresholds/ai-guardrail-ner-en-v2.selected-threshold.json
+```
+
+The training command downloads
+`distilbert/distilbert-base-cased`. On the reference development machine,
+training 4,000 v2 examples for three epochs on CPU took about 24 minutes. See
+the [offline evaluation workflow](docs/offline-evaluation.md) for the complete
+v1, v2, Qwen, and benchmark procedure.
+
+## Current NER POC result
+
+The initial privacy-safe A/B evaluation used the same eight clean records for
+both releases. One of the nine frozen challenge records was excluded before
+inference because its content hash overlapped the v1 training provenance.
+
+| Metric | v1 | v2 |
+| --- | ---: | ---: |
+| Validation-selected threshold | 0.55 | 0.50 |
+| Strict span F1 | 0.522 | 0.846 |
+| Strict span recall | 0.462 | 0.846 |
+| Exact-record accuracy | 25% | 75% |
+| Sensitive-character miss rate | 26.83% | 1.46% |
+| Extra-mask rate | 0% | 0% |
+
+These eight examples provide a directional POC signal, not a statistically
+conclusive quality estimate. A larger independently reviewed challenge release
+is required before making a production-readiness decision.
+
+## Local artifacts and privacy
+
+Model weights, generated datasets, raw prompts, threshold artifacts, and full
+evaluation reports are not committed to Git. They remain under the ignored
+`artifacts/`, `datasets/generated/`, and `evaluation/reports/` paths.
+
+Use fictitious synthetic values only. Never put production prompts, customer
+identifiers, credentials, or internal project names in repository data or
+logs.
