@@ -11,8 +11,16 @@ python -m pip install -e ".[dev,ml]"
 
 ## 2. Generate synthetic data
 
+Generate v1:
+
 ```powershell
 python -c "from pathlib import Path; from ai_guardrail.synthetic.generator import generate_dataset; print(generate_dataset(Path('config/synthetic-v1.yaml'), Path('datasets/generated/v1')))"
+```
+
+Generate v2:
+
+```powershell
+python -c "from pathlib import Path; from ai_guardrail.synthetic.generator import generate_dataset; print(generate_dataset(Path('config/synthetic-v2.yaml'), Path('datasets/generated/v2')))"
 ```
 
 Generated data remains under `datasets/generated/` and is not committed.
@@ -36,11 +44,25 @@ families. Do not run the benchmark with an unreviewed candidates file.
 
 ## 4. Train DistilBERT
 
+Train v1:
+
 ```powershell
 python -m ai_guardrail.ner.train `
+  --release-version v1 `
   --train datasets/generated/v1/train.jsonl `
   --validation datasets/generated/v1/validation.jsonl `
   --output artifacts/ai-guardrail-ner-en-v1 `
+  --seed 20260725
+```
+
+Train v2 with the same training seed for a controlled dataset comparison:
+
+```powershell
+python -m ai_guardrail.ner.train `
+  --release-version v2 `
+  --train datasets/generated/v2/train.jsonl `
+  --validation datasets/generated/v2/validation.jsonl `
+  --output artifacts/ai-guardrail-ner-en-v2 `
   --seed 20260725
 ```
 
@@ -67,6 +89,8 @@ $llamaServer = 'C:\approved-tools\llama-server.exe'
 
 ## 6. Select the NER threshold
 
+Select the v1 threshold from v1 validation:
+
 ```powershell
 python -m ai_guardrail.evaluation.threshold_cli `
   --validation datasets/generated/v1/validation.jsonl `
@@ -74,8 +98,22 @@ python -m ai_guardrail.evaluation.threshold_cli `
   --output artifacts/thresholds/ai-guardrail-ner-en-v1.selected-threshold.json
 ```
 
+Select the v2 threshold independently from v2 validation:
+
+```powershell
+python -m ai_guardrail.evaluation.threshold_cli `
+  --validation datasets/generated/v2/validation.jsonl `
+  --ner-model artifacts/ai-guardrail-ner-en-v2 `
+  --output artifacts/thresholds/ai-guardrail-ner-en-v2.selected-threshold.json
+```
+
 The threshold artifact must remain outside the immutable model artifact
 directory. The challenge set is not used for threshold selection.
+
+For the initial NER-only A/B comparison, evaluate both releases against the
+same frozen `datasets/challenge/en-v1.seed.jsonl`. The v2 generated
+`challenge.candidates.jsonl` remains unreviewed and is not an evaluation
+release.
 
 ## 7. Evaluate
 

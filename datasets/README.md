@@ -25,3 +25,8 @@ python -c "from pathlib import Path; from ai_guardrail.synthetic.generator impor
 V2 uses split-isolated compositional templates and catalogs. Its generated
 challenge candidates remain unreviewed and must not replace the frozen
 `datasets/challenge/en-v1.seed.jsonl` benchmark.
+
+The v1 and v2 model comparison uses different deterministic dataset releases
+but the same training seed, `20260725`. This keeps model initialization,
+shuffling, and dropout randomness controlled while the dataset is the
+experimental variable.
