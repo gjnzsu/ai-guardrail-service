@@ -27,6 +27,7 @@ def dataset_example(
     split: str,
     family: str,
     text: str,
+    generator_version: str = "v1",
 ) -> LabeledExample:
     return LabeledExample(
         id=record_id,
@@ -34,7 +35,7 @@ def dataset_example(
         text=text,
         entities=[],
         template_family=family,
-        generator_version="v1",
+        generator_version=generator_version,
         split=split,
     )
 
@@ -51,6 +52,7 @@ def test_training_cli_help_requires_dataset_and_output_paths() -> None:
     assert "--train" in result.stdout
     assert "--validation" in result.stdout
     assert "--output" in result.stdout
+    assert "--release-version" in result.stdout
 
 
 def test_training_cli_help_does_not_import_optional_ml_modules() -> None:
@@ -185,6 +187,46 @@ def test_training_dataset_validation_records_hashed_provenance(
     assert provenance["validation"]["content_hashes"] == [
         manifest_module.sha256_bytes(b"B")
     ]
+
+
+def test_training_dataset_validation_accepts_expected_v2_release(
+    tmp_path: Path,
+) -> None:
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "validation.jsonl"
+    write_jsonl(
+        train_path,
+        [
+            dataset_example(
+                record_id="v2-train-1",
+                split="train",
+                family="v2-train-family",
+                text="V2 train",
+                generator_version="v2",
+            )
+        ],
+    )
+    write_jsonl(
+        validation_path,
+        [
+            dataset_example(
+                record_id="v2-validation-1",
+                split="validation",
+                family="v2-validation-family",
+                text="V2 validation",
+                generator_version="v2",
+            )
+        ],
+    )
+
+    validated = validate_training_datasets(
+        train_path,
+        validation_path,
+        expected_generator_version="v2",
+    )
+
+    assert validated.train.records[0].generator_version == "v2"
+    assert validated.validation.records[0].generator_version == "v2"
 
 
 @pytest.mark.parametrize(
@@ -541,14 +583,24 @@ class FakeTrainer:
 
 
 @pytest.mark.parametrize("precreate_output", [False, True])
+@pytest.mark.parametrize(
+    ("release_version", "artifact_name", "generator_version"),
+    [
+        ("v1", ARTIFACT_NAME, "v1"),
+        ("v2", "ai-guardrail-ner-en-v2", "v2"),
+    ],
+)
 def test_training_main_pins_revision_and_writes_artifact_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     precreate_output: bool,
+    release_version: str,
+    artifact_name: str,
+    generator_version: str,
 ) -> None:
     train_path = tmp_path / "train.jsonl"
     validation_path = tmp_path / "validation.jsonl"
-    output = tmp_path / ARTIFACT_NAME
+    output = tmp_path / artifact_name
     if precreate_output:
         output.mkdir()
     for path, split in ((train_path, "train"), (validation_path, "validation")):
@@ -565,7 +617,7 @@ def test_training_main_pins_revision_and_writes_artifact_manifest(
                     ),
                     entities=[EntitySpan(type=EntityType.PERSON, start=0, end=11)],
                     template_family=f"person-{split}",
-                    generator_version="v1",
+                    generator_version=generator_version,
                     split=split,
                 )
             ],
@@ -583,6 +635,7 @@ def test_training_main_pins_revision_and_writes_artifact_manifest(
             output=output,
             seed=7,
             base_checkpoint="distilbert/distilbert-base-cased",
+            release_version=release_version,
         ),
     )
     monkeypatch.setattr(
@@ -634,7 +687,9 @@ def test_training_main_pins_revision_and_writes_artifact_manifest(
     assert len(FakeTrainer.latest.kwargs["eval_dataset"]) == 1
     manifest = json.loads((output / "training-manifest.json").read_text(encoding="utf-8"))
     assert manifest["base_revision"] == "immutable-revision"
-    assert manifest["generator_version"] == "v1"
+    assert manifest["artifact_name"] == artifact_name
+    assert manifest["dataset_version"] == release_version
+    assert manifest["generator_version"] == generator_version
     assert manifest["label_mapping"] == LABEL_TO_ID
     assert manifest["seed"] == 7
     assert manifest["threshold"] is None

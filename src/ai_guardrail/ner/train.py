@@ -10,12 +10,12 @@ from ai_guardrail.io import JsonlSnapshot, read_jsonl_snapshot
 from ai_guardrail.ner.alignment import align_spans_to_bio
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABEL_TO_ID
 from ai_guardrail.ner.manifest import (
-    ARTIFACT_NAME,
     BASE_CHECKPOINT,
     GENERATOR_VERSION,
     artifact_checksums,
     build_dataset_provenance,
     build_manifest,
+    get_release_profile,
     sha256_bytes,
     write_manifest,
 )
@@ -69,6 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=20260725)
     parser.add_argument(
+        "--release-version",
+        choices=("v1", "v2"),
+        default="v1",
+    )
+    parser.add_argument(
         "--base-checkpoint",
         default=BASE_CHECKPOINT,
     )
@@ -105,6 +110,7 @@ class ValidatedTrainingDatasets:
 def validate_training_datasets(
     train_path: Path,
     validation_path: Path,
+    expected_generator_version: str = GENERATOR_VERSION,
 ) -> ValidatedTrainingDatasets:
     try:
         if train_path.resolve() == validation_path.resolve():
@@ -123,7 +129,7 @@ def validate_training_datasets(
             for example in validation_snapshot.records
         )
         or any(
-            example.generator_version != GENERATOR_VERSION
+            example.generator_version != expected_generator_version
             for example in train_snapshot.records + validation_snapshot.records
         )
     ):
@@ -164,7 +170,12 @@ def validate_training_datasets(
 
 def main() -> None:
     args = parse_args()
-    if args.base_checkpoint != BASE_CHECKPOINT or args.output.name != ARTIFACT_NAME:
+    release_version = getattr(args, "release_version", "v1")
+    profile = get_release_profile(release_version)
+    if (
+        args.base_checkpoint != BASE_CHECKPOINT
+        or args.output.name != profile.artifact_name
+    ):
         raise ValueError("invalid training configuration")
     if args.output.is_symlink() or (args.output.exists() and not args.output.is_dir()):
         raise ValueError("output must be a local directory")
@@ -179,6 +190,7 @@ def main() -> None:
     validated_datasets = validate_training_datasets(
         args.train,
         args.validation,
+        expected_generator_version=profile.generator_version,
     )
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -245,8 +257,8 @@ def main() -> None:
     manifest = build_manifest(
         base_checkpoint=args.base_checkpoint,
         base_revision=resolved_revision,
-        dataset_version="v1",
-        generator_version=GENERATOR_VERSION,
+        dataset_version=profile.dataset_version,
+        generator_version=profile.generator_version,
         label_mapping=LABEL_TO_ID,
         seed=args.seed,
         threshold=None,
@@ -260,6 +272,7 @@ def main() -> None:
             "max_length": 512,
         },
         datasets=validated_datasets.provenance,
+        release_version=profile.version,
     )
     manifest["artifact_checksums"] = _artifact_checksums(args.output)
     write_manifest(args.output / _MANIFEST_NAME, manifest)
