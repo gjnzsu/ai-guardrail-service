@@ -43,12 +43,16 @@ python -m ai_guardrail.ner.train `
   --train datasets/generated/v2/train.jsonl `
   --validation datasets/generated/v2/validation.jsonl `
   --output artifacts/ai-guardrail-ner-en-v2 `
-  --seed 20260727
+  --seed 20260725
 ```
 
 For a controlled A/B comparison, both releases retain the current three
 epochs, batch sizes, learning rate, weight decay, BIO label mapping, and
-`eval_loss` checkpoint selection.
+`eval_loss` checkpoint selection. V1 and v2 also use the same training seed,
+`20260725`, so classification-head initialization, data shuffling, dropout, and
+other seeded training operations are controlled. The v2 dataset generator
+continues to use its release seed, `20260727`; changing the generated dataset
+is the experimental treatment.
 
 ## Artifact Verification and Loading
 
@@ -94,7 +98,7 @@ Implementation follows TDD:
    manifests, preserving v1 defaults, and loading a v2 detector identity;
 2. implement the minimal trusted profile abstraction;
 3. run focused and full tests plus Ruff;
-4. run one v2 CPU training with seed `20260727`;
+4. run one v2 CPU training with seed `20260725`;
 5. select the v2 validation threshold;
 6. run the frozen challenge comparison;
 7. verify aggregate results, artifact checksums, privacy constraints, Git
