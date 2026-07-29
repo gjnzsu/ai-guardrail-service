@@ -84,6 +84,38 @@ is required before making a production-readiness decision. The table records
 the original global-threshold A/B; the current evaluation workflow selects a
 separate validation threshold for each entity type.
 
+### Current v2 per-entity thresholds
+
+The validation-selected schema-v2 threshold artifact uses:
+
+| Entity | Threshold |
+| --- | ---: |
+| PERSON | 0.35 |
+| ADDRESS | 0.90 |
+| EMAIL | 0.45 |
+| API_KEY | 0.95 |
+| CUSTOMER_ID | 0.95 |
+| INTERNAL_PROJECT | 0.60 |
+
+Compared with the original global `0.50` policy, per-entity calibration
+produced the following aggregate POC results:
+
+| Metric | Global 0.50 | Per entity |
+| --- | ---: | ---: |
+| Validation strict span F1 (800 examples) | 0.876 | 0.906 |
+| Challenge strict span F1 (13 examples) | 0.778 | 0.857 |
+| Challenge exact-record accuracy | 69.2% | 76.9% |
+| Challenge PERSON F1 | 0.500 | 0.667 |
+| Generic hard-negative predictions | 0 | 0 |
+
+The 13 challenge examples comprise the nine frozen v1 seed records and four
+reviewed incremental v2 records; all are isolated from v2 training and
+validation provenance. Per-entity thresholds recover the observed borderline
+PERSON case and suppress high-confidence type-confusion false positives.
+Compound addresses with alphanumeric unit identifiers remain a known
+full-span recall limitation that requires future training-data improvement,
+not further threshold tuning.
+
 ## Local artifacts and privacy
 
 Model weights, generated datasets, raw prompts, threshold artifacts, and full
