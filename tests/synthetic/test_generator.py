@@ -132,6 +132,7 @@ def test_incremental_v2_challenge_fixture_has_expected_spans() -> None:
                 "Northbridge District Lantern Plaza A8-2507",
             ),
         ],
+        "challenge-v2-000004": [],
     }
 
     assert {record.id for record in records} == set(expected_spans)
