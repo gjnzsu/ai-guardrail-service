@@ -126,6 +126,12 @@ def test_incremental_v2_challenge_fixture_has_expected_spans() -> None:
             (EntityType.PERSON, "Emily"),
             (EntityType.CUSTOMER_ID, "7654321"),
         ],
+        "challenge-v2-000003": [
+            (
+                EntityType.ADDRESS,
+                "Northbridge District Lantern Plaza A8-2507",
+            ),
+        ],
     }
 
     assert {record.id for record in records} == set(expected_spans)
