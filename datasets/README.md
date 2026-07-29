@@ -4,6 +4,9 @@ Only fictitious synthetic values may be used in this repository.
 
 - `datasets/generated/` is reproducible output and is ignored by Git.
 - `datasets/challenge/en-v1.seed.jsonl` is a small reviewed smoke fixture.
+- `datasets/challenge/en-v2.incremental.jsonl` contains reviewed, synthetic
+  cases discovered during manual v2 testing. It supplements rather than
+  modifies the frozen v1 benchmark.
 - No production prompt, customer identifier, credential, or copied internal
   project name may be committed.
 - Every generated span must be verified by slicing the source text.

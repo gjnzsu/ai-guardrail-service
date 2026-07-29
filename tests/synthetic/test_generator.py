@@ -115,6 +115,30 @@ def test_committed_challenge_seed_fixture_has_expected_spans() -> None:
         ] == expected_spans[record.id]
 
 
+def test_incremental_v2_challenge_fixture_has_expected_spans() -> None:
+    records = read_jsonl(Path("datasets/challenge/en-v2.incremental.jsonl"))
+    expected_spans = {
+        "challenge-v2-000001": [
+            (EntityType.PERSON, "Raymond"),
+            (EntityType.EMAIL, "87654321@qq.example"),
+        ],
+        "challenge-v2-000002": [
+            (EntityType.PERSON, "Emily"),
+            (EntityType.CUSTOMER_ID, "7654321"),
+        ],
+    }
+
+    assert {record.id for record in records} == set(expected_spans)
+    for record in records:
+        assert record.language == "en"
+        assert record.generator_version == "v2"
+        assert record.split == "challenge"
+        assert [
+            (entity.type, record.text[entity.start : entity.end])
+            for entity in record.entities
+        ] == expected_spans[record.id]
+
+
 def test_rendering_every_template_preserves_exact_catalog_values_and_boundaries() -> None:
     for template in TEMPLATES:
         values: dict[EntityType, list[str]] = defaultdict(list)
