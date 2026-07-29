@@ -7,9 +7,12 @@ from typing import Any
 
 import pytest
 
-from ai_guardrail.domain import LabeledExample
+from ai_guardrail.domain import EntityType, LabeledExample
 from ai_guardrail.evaluation import cli
-from ai_guardrail.evaluation.threshold_artifact import THRESHOLDS
+from ai_guardrail.evaluation.threshold_artifact import (
+    LEGACY_THRESHOLDS,
+    THRESHOLDS,
+)
 from ai_guardrail.io import write_jsonl
 from ai_guardrail.ner.labels import LABEL_TO_ID
 from ai_guardrail.ner.manifest import (
@@ -48,6 +51,7 @@ def write_model_and_threshold_artifact(
     tmp_path: Path,
     *,
     selected_threshold: float = 0.8,
+    selected_thresholds: dict[str, float] | None = None,
     manifest_hash: str | None = None,
     model_version: str = "ai-guardrail-ner-en-v1",
 ) -> tuple[Path, Path]:
@@ -99,28 +103,35 @@ def write_model_and_threshold_artifact(
         manifest_path.read_bytes()
     ).hexdigest()
     threshold_path = tmp_path / "selected-threshold.json"
+    payload = {
+        "candidate_thresholds": (
+            THRESHOLDS
+            if selected_thresholds is not None
+            else LEGACY_THRESHOLDS
+        ),
+        "model_version": model_version,
+        "ner_artifact_sha256": sha256_bytes(
+            json.dumps(
+                checksums,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ),
+        "ner_manifest_sha256": (
+            manifest_hash
+            if manifest_hash is not None
+            else actual_manifest_hash
+        ),
+        "validation_sha256": "a" * 64,
+        "validation_provenance": datasets["validation"],
+    }
+    if selected_thresholds is None:
+        payload["selected_threshold"] = selected_threshold
+    else:
+        payload["selected_thresholds"] = selected_thresholds
+        payload["threshold_schema_version"] = 2
     threshold_path.write_text(
-        json.dumps(
-            {
-                "candidate_thresholds": THRESHOLDS,
-                "model_version": model_version,
-                "ner_artifact_sha256": sha256_bytes(
-                    json.dumps(
-                        checksums,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode()
-                ),
-                "ner_manifest_sha256": (
-                    manifest_hash
-                    if manifest_hash is not None
-                    else actual_manifest_hash
-                ),
-                "selected_threshold": selected_threshold,
-                "validation_sha256": "a" * 64,
-                "validation_provenance": datasets["validation"],
-            }
-        )
+        json.dumps(payload)
         + "\n",
         encoding="utf-8",
     )
@@ -192,8 +203,21 @@ async def test_benchmark_cli_uses_validated_threshold_artifact(
 ) -> None:
     challenge_path = tmp_path / "challenge.jsonl"
     write_jsonl(challenge_path, [challenge_example()])
-    model_path, threshold_path = write_model_and_threshold_artifact(tmp_path)
-    loaded_thresholds: list[tuple[float, dict[str, object]]] = []
+    selected_thresholds = {
+        entity_type.value: (
+            0.35
+            if entity_type == EntityType.PERSON
+            else 0.6
+        )
+        for entity_type in EntityType
+    }
+    model_path, threshold_path = write_model_and_threshold_artifact(
+        tmp_path,
+        selected_thresholds=selected_thresholds,
+    )
+    loaded_thresholds: list[
+        tuple[dict[EntityType, float], dict[str, object]]
+    ] = []
     written_results: list[dict[str, Any]] = []
 
     class FakeRunner:
@@ -255,7 +279,10 @@ async def test_benchmark_cli_uses_validated_threshold_artifact(
     threshold_payload = json.loads(threshold_path.read_text(encoding="utf-8"))
     assert loaded_thresholds == [
         (
-            0.8,
+            {
+                entity_type: selected_thresholds[entity_type.value]
+                for entity_type in EntityType
+            },
             {
                 "expected_artifact_sha256": threshold_payload[
                     "ner_artifact_sha256"
@@ -267,7 +294,8 @@ async def test_benchmark_cli_uses_validated_threshold_artifact(
         )
     ]
     environment = written_results[0]["environment"]
-    assert environment["ner_threshold"] == 0.8
+    assert environment["ner_thresholds"] == selected_thresholds
+    assert "ner_threshold" not in environment
     assert environment["ner_threshold_artifact_sha256"] == hashlib.sha256(
         threshold_path.read_bytes()
     ).hexdigest()

@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 
 from ai_guardrail.detectors.ner import NerDetector
-from ai_guardrail.domain import LabeledExample
+from ai_guardrail.domain import EntityType, LabeledExample
 from ai_guardrail.evaluation.metrics import select_threshold
 from ai_guardrail.evaluation.threshold_artifact import (
     THRESHOLDS,
@@ -84,12 +84,32 @@ async def run() -> None:
                 "NER threshold selection failed safely"
             )
         predictions.append(output.candidates)
-    threshold = select_threshold(
-        [example.entities for example in examples],
-        predictions,
-        THRESHOLDS,
-    )
-    if not math.isfinite(threshold):
+    thresholds = {
+        entity_type: select_threshold(
+            [
+                [
+                    entity
+                    for entity in example.entities
+                    if entity.type == entity_type
+                ]
+                for example in examples
+            ],
+            [
+                [
+                    candidate
+                    for candidate in example_predictions
+                    if candidate.type == entity_type
+                ]
+                for example_predictions in predictions
+            ],
+            THRESHOLDS,
+        )
+        for entity_type in EntityType
+    }
+    if any(
+        not math.isfinite(threshold)
+        for threshold in thresholds.values()
+    ):
         raise RuntimeError(
             "NER threshold selection produced an invalid threshold"
         )
@@ -97,7 +117,7 @@ async def run() -> None:
         model_path=args.ner_model,
         validation_provenance=validation_provenance,
         candidate_thresholds=THRESHOLDS,
-        selected_threshold=threshold,
+        selected_thresholds=thresholds,
         expected_artifact_sha256=verified.artifact_sha256,
         expected_manifest_sha256=verified.manifest_sha256,
     )

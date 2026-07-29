@@ -66,10 +66,29 @@ def write_markdown_report(
     environment = result.get("environment")
     if isinstance(environment, dict):
         threshold = environment.get("ner_threshold")
+        thresholds = environment.get("ner_thresholds")
         artifact_sha256 = environment.get(
             "ner_threshold_artifact_sha256"
         )
-        if threshold is not None and artifact_sha256 is not None:
+        if isinstance(thresholds, dict) and artifact_sha256 is not None:
+            lines.extend(
+                [
+                    "",
+                    "## Reproducibility",
+                    "",
+                    "Selected NER thresholds:",
+                    "",
+                    "| Entity | Threshold |",
+                    "| --- | ---: |",
+                    *[
+                        f"| {entity_type} | {value} |"
+                        for entity_type, value in thresholds.items()
+                    ],
+                    "",
+                    f"Threshold artifact SHA-256: `{artifact_sha256}`",
+                ]
+            )
+        elif threshold is not None and artifact_sha256 is not None:
             lines.extend(
                 [
                     "",

@@ -195,14 +195,25 @@ async def test_threshold_cli_writes_finite_validation_selected_artifact(
         "ner_manifest_sha256": hashlib.sha256(
             manifest_path.read_bytes()
         ).hexdigest(),
-        "selected_threshold": 0.8,
+        "selected_thresholds": {
+            "ADDRESS": 0.95,
+            "API_KEY": 0.95,
+            "CUSTOMER_ID": 0.95,
+            "EMAIL": 0.95,
+            "INTERNAL_PROJECT": 0.95,
+            "PERSON": 0.8,
+        },
+        "threshold_schema_version": 2,
         "validation_sha256": hashlib.sha256(validation_path.read_bytes()).hexdigest(),
         "validation_provenance": build_dataset_provenance(
             read_jsonl_snapshot(validation_path),
         ),
     }
     assert "Jane Cooper" not in output_path.read_text(encoding="utf-8")
-    assert math.isfinite(payload["selected_threshold"])
+    assert all(
+        math.isfinite(value)
+        for value in payload["selected_thresholds"].values()
+    )
     assert load_calls == [
         (
             model_path,

@@ -71,7 +71,7 @@ inference because its content hash overlapped the v1 training provenance.
 
 | Metric | v1 | v2 |
 | --- | ---: | ---: |
-| Validation-selected threshold | 0.55 | 0.50 |
+| Original global threshold | 0.55 | 0.50 |
 | Strict span F1 | 0.522 | 0.846 |
 | Strict span recall | 0.462 | 0.846 |
 | Exact-record accuracy | 25% | 75% |
@@ -80,7 +80,9 @@ inference because its content hash overlapped the v1 training provenance.
 
 These eight examples provide a directional POC signal, not a statistically
 conclusive quality estimate. A larger independently reviewed challenge release
-is required before making a production-readiness decision.
+is required before making a production-readiness decision. The table records
+the original global-threshold A/B; the current evaluation workflow selects a
+separate validation threshold for each entity type.
 
 ## Local artifacts and privacy
 

@@ -48,6 +48,19 @@ class FakeModel:
         return FakeOutput()
 
 
+class MixedEntityOutput:
+    def __init__(self) -> None:
+        logits = torch.zeros((1, 4, 13))
+        logits[0, 1, LABEL_TO_ID["B-PERSON"]] = 8
+        logits[0, 2, LABEL_TO_ID["B-EMAIL"]] = 8
+        self.logits = logits
+
+
+class MixedEntityModel(FakeModel):
+    def __call__(self, **kwargs: object) -> MixedEntityOutput:
+        return MixedEntityOutput()
+
+
 @pytest.mark.asyncio
 async def test_ner_detector_decodes_model_logits() -> None:
     detector = NerDetector(
@@ -90,6 +103,38 @@ async def test_ner_detector_filters_candidates_below_threshold() -> None:
 
     assert output.status == "success"
     assert output.candidates == []
+
+
+@pytest.mark.asyncio
+async def test_ner_detector_filters_with_per_entity_thresholds() -> None:
+    thresholds = {entity_type: 1.0 for entity_type in EntityType}
+    thresholds[EntityType.PERSON] = 0.5
+    detector = NerDetector(
+        tokenizer=FakeTokenizer(),
+        model=MixedEntityModel(),
+        model_version="ai-guardrail-ner-en-v2",
+        threshold=thresholds,
+    )
+
+    output = await detector.detect("Jane Emails")
+
+    assert output.status == "success"
+    assert [candidate.type for candidate in output.candidates] == [
+        EntityType.PERSON,
+    ]
+
+
+def test_ner_detector_rejects_incomplete_per_entity_thresholds() -> None:
+    with pytest.raises(
+        ValueError,
+        match="thresholds must cover every entity type",
+    ):
+        NerDetector(
+            tokenizer=FakeTokenizer(),
+            model=FakeModel(),
+            model_version="ai-guardrail-ner-en-v2",
+            threshold={EntityType.PERSON: 0.5},
+        )
 
 
 class RaisingTokenizer:

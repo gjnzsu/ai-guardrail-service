@@ -107,6 +107,12 @@ python -m ai_guardrail.evaluation.threshold_cli `
   --output artifacts/thresholds/ai-guardrail-ner-en-v2.selected-threshold.json
 ```
 
+The threshold CLI selects a separate strict-span F1 threshold for each entity
+type from the `0.35` through `0.95` candidate grid. The resulting schema-v2
+artifact records all six thresholds. Benchmark loading also accepts the
+earlier single-threshold artifact format and expands that value across every
+entity type.
+
 The threshold artifact must remain outside the immutable model artifact
 directory. The challenge set is not used for threshold selection.
 

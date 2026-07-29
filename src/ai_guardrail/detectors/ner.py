@@ -4,10 +4,11 @@ import asyncio
 import gc
 import math
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ai_guardrail.domain import DetectionSource, DetectorOutput
+from ai_guardrail.domain import DetectionSource, DetectorOutput, EntityType
 from ai_guardrail.ner.alignment import decode_bio_predictions
 from ai_guardrail.ner.labels import ID_TO_LABEL, LABELS
 from ai_guardrail.ner.manifest import (
@@ -34,6 +35,28 @@ def _detach_model_storage(model: Any) -> Any:
     return model
 
 
+def _normalize_thresholds(
+    threshold: float | Mapping[EntityType, float],
+) -> dict[EntityType, float]:
+    if isinstance(threshold, Mapping):
+        if set(threshold) != set(EntityType):
+            raise ValueError(
+                "thresholds must cover every entity type"
+            )
+        thresholds = dict(threshold)
+    else:
+        thresholds = {
+            entity_type: threshold
+            for entity_type in EntityType
+        }
+    if any(
+        not math.isfinite(value) or not 0.0 <= value <= 1.0
+        for value in thresholds.values()
+    ):
+        raise ValueError("threshold must be between 0 and 1")
+    return thresholds
+
+
 class NerDetector:
     def __init__(
         self,
@@ -41,16 +64,15 @@ class NerDetector:
         tokenizer: Any,
         model: Any,
         model_version: str,
-        threshold: float,
+        threshold: float | Mapping[EntityType, float],
         artifact_sha256: str | None = None,
         manifest_sha256: str | None = None,
     ) -> None:
-        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
-            raise ValueError("threshold must be between 0 and 1")
         self.tokenizer = tokenizer
         self.model = model.eval()
         self.model_version = model_version
         self.threshold = threshold
+        self.thresholds = _normalize_thresholds(threshold)
         self.artifact_sha256 = artifact_sha256
         self.manifest_sha256 = manifest_sha256
 
@@ -58,7 +80,7 @@ class NerDetector:
     def load(
         cls,
         model_path: Path,
-        threshold: float,
+        threshold: float | Mapping[EntityType, float],
         *,
         expected_artifact_sha256: str | None = None,
         expected_manifest_sha256: str | None = None,
@@ -136,7 +158,9 @@ class NerDetector:
         candidates = [
             candidate
             for candidate in candidates
-            if candidate.confidence is not None and candidate.confidence >= self.threshold
+            if candidate.confidence is not None
+            and candidate.confidence
+            >= self.thresholds[candidate.type]
         ]
         return DetectorOutput(
             detector=DetectionSource.NER,

@@ -8,7 +8,7 @@ from pathlib import Path
 from ai_guardrail.detectors.ner import NerDetector
 from ai_guardrail.detectors.qwen import QwenDetector
 from ai_guardrail.detectors.regex import RegexDetector
-from ai_guardrail.domain import LabeledExample
+from ai_guardrail.domain import EntityType, LabeledExample
 from ai_guardrail.evaluation.report import (
     write_json_report,
     write_markdown_report,
@@ -159,7 +159,7 @@ async def run() -> None:
     regex = RegexDetector.from_yaml(args.regex_config)
     ner = NerDetector.load(
         args.ner_model,
-        threshold.value,
+        threshold.thresholds,
         expected_artifact_sha256=threshold.model_artifact_sha256,
         expected_manifest_sha256=threshold.manifest_sha256,
     )
@@ -182,7 +182,7 @@ async def run() -> None:
         resource_pids={"qwen": args.qwen_pid},
     )
     result = await runner.run(examples)
-    result["environment"] = {
+    environment = {
         "host_processor": platform.processor(),
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -190,7 +190,10 @@ async def run() -> None:
         "ner_model_path": args.ner_model.name,
         "ner_manifest_sha256": threshold.manifest_sha256,
         "ner_artifact_sha256": threshold.model_artifact_sha256,
-        "ner_threshold": threshold.value,
+        "ner_thresholds": {
+            entity_type.value: threshold.thresholds[entity_type]
+            for entity_type in EntityType
+        },
         "ner_threshold_artifact_sha256": (
             threshold.artifact_sha256
         ),
@@ -211,6 +214,9 @@ async def run() -> None:
         "qwen_output_tokens": 96,
         "repetitions": args.repetitions,
     }
+    if len(set(threshold.thresholds.values())) == 1:
+        environment["ner_threshold"] = threshold.value
+    result["environment"] = environment
     write_json_report(
         args.output_dir / "report.json",
         result,

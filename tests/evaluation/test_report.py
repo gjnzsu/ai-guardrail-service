@@ -43,3 +43,24 @@ def test_report_writers_create_aggregate_only_outputs(tmp_path: Path) -> None:
     assert "| ner | 1.0000 | 1.0000 |" in markdown
     assert "Selected NER threshold: `0.8`" in markdown
     assert f"Threshold artifact SHA-256: `{'a' * 64}`" in markdown
+
+
+def test_markdown_report_writes_per_entity_thresholds(
+    tmp_path: Path,
+) -> None:
+    result = benchmark_result()
+    environment = result["environment"]
+    assert isinstance(environment, dict)
+    environment.pop("ner_threshold")
+    environment["ner_thresholds"] = {
+        "PERSON": 0.35,
+        "ADDRESS": 0.9,
+    }
+    output_path = tmp_path / "report.md"
+
+    write_markdown_report(output_path, result)
+
+    markdown = output_path.read_text(encoding="utf-8")
+    assert "Selected NER thresholds:" in markdown
+    assert "| PERSON | 0.35 |" in markdown
+    assert "| ADDRESS | 0.9 |" in markdown
