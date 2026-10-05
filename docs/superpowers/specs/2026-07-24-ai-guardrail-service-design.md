@@ -860,3 +860,36 @@ separately decides to delete it.
   Qwen runtime image.
 - Keep GKE manifests flat and cleanup limited to `kubectl delete -k`; do not add
   Terraform or deployment-script frameworks for this POC.
+
+## Local tool-execution experiment (2026-10-05)
+
+See the [execution diagram](../../diagrams/ai-guardrail-service-design-diagram-01.png)
+and [editable Draw.io source](../../diagrams/ai-guardrail-service-design-diagram-01.drawio).
+
+This standalone learning experiment in `ai_guardrail.tool_execution` is separate
+from detectors, evaluation, and the Guardrail API. The detector non-goals and
+observational/shadow semantics above remain unchanged. It introduces no agent
+runtime, OPA, network service, banking/payment integration, or dependency.
+
+A trusted local caller injects synchronous mock callables under fixed tool
+identifiers and an explicit allowlist into `ToolExecutor`. Every step calls
+`execute(tool_id, ...)`, including steps receiving a previous tool's output.
+The entry point checks the local allowlist immediately before invoking each
+registered callable; missing permission or registration raises a fixed
+`PermissionError` without calling the tool. Registration alone grants no access.
+An empty allowlist denies all tools. The allowlist is retained so local policy
+changes are checked on the next execution; the registry is copied on creation.
+
+Audit records remain in memory and contain only `tool_id`, `decision`, and a
+fixed reason (`allowlisted`, `not_allowlisted`, or `not_registered`). Trusted
+identifiers must not contain sensitive data. Arguments, outputs, and prompts
+are excluded. An allow record describes authorization before the call, not its
+successful completion; the executor does not catch or log tool exceptions.
+
+The three synthetic tests demonstrate one allowed call, two individually checked
+calls with output chaining, and a registered but unallowlisted callable blocked
+before invocation. They also assert the small audit schema excludes synthetic
+secrets. This is a single-process mock experiment, not a sandbox or production
+security guarantee: callers retaining callable references can bypass the entry
+point. Concurrent policy mutation, tool isolation, exception sanitization, and
+real integrations are outside this approved local scope.

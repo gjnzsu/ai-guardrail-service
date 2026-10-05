@@ -17,6 +17,41 @@ The initial Gateway integration is shadow-only.
 - [Offline evaluation workflow](docs/offline-evaluation.md)
 - [Dataset policy and generation](datasets/README.md)
 
+## Local tool-execution PoC
+
+The repository also contains a standalone local execution experiment in
+[`ai_guardrail.tool_execution`](src/ai_guardrail/tool_execution.py), separate
+from sensitive-entity detectors and their shadow-only integration.
+
+A trusted local caller injects a registry of synchronous mock callables and an
+allowlist into `ToolExecutor`. Each `execute` call checks permission first, then
+registration, before invoking the callable. Missing permission or registration
+blocks execution with `PermissionError`. The caller handles output chaining;
+each subsequent invocation repeats the checks.
+
+The in-memory audit contains only the tool identifier, decision, and fixed
+reason. Allow decisions are recorded before invocation and do not indicate tool
+success; arguments, results, and prompts are excluded. This experiment has no
+agent runtime, MCP integration, or tool sandbox. Callers retaining direct
+callable references can bypass the gate. It uses mock tools and synthetic data
+only, with no new dependencies or real service integration.
+
+The [three tests](tests/test_tool_execution.py) cover one allowed invocation,
+two individually checked calls with output chaining, and a registered tool
+omitted from the allowlist that is blocked without invocation. Each scenario
+also checks audit privacy. Run them locally with:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_tool_execution.py -q
+```
+
+See the [design addendum](docs/superpowers/specs/2026-07-24-ai-guardrail-service-design.md#local-tool-execution-experiment-2026-10-05)
+for the execution boundary and limitations.
+
+![Local tool-execution PoC design](docs/diagrams/ai-guardrail-service-design-diagram-01.png)
+
+[Open the editable Draw.io diagram](docs/diagrams/ai-guardrail-service-design-diagram-01.drawio).
+
 ## Development
 
 ```powershell
